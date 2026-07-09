@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 -- | GitQ test suite: tokenizer, parser (incl. the fail-loud error
 -- catalogue and the P1–P7 grammar disambiguation properties), registry
 -- coherence, completion, and integration against a real scratch git repo.
@@ -5,8 +6,9 @@ module Main (main) where
 
 import Control.Monad (forM_, unless, when)
 import Data.IORef
-import Data.List (isInfixOf, isPrefixOf, sort)
+import Data.List (isInfixOf, sort)
 import qualified Data.Map.Strict as M
+import qualified Data.Text as T
 import System.Directory
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath ((</>))
@@ -285,9 +287,9 @@ renderTests ref = do
   let f = Frame "commit" ["p1", "p2"]
             (M.fromList [("sha", VStr "abc"), ("message", VStr "say \"hi\"")])
       sexp = renderFrameSexp f
-  check ref "sexp has type" ("(:type commit" `isPrefixOf` sexp)
-  check ref "sexp escapes quotes" ("\\\"hi\\\"" `isInfixOf` sexp)
-  check ref "sexp parents" (":parents (\"p1\" \"p2\")" `isInfixOf` sexp)
+  check ref "sexp has type" ("(:type commit" `T.isPrefixOf` sexp)
+  check ref "sexp escapes quotes" ("\\\"hi\\\"" `T.isInfixOf` sexp)
+  check ref "sexp parents" (":parents (\"p1\" \"p2\")" `T.isInfixOf` sexp)
 
 -- Integration against a real scratch repo -----------------------------------------
 
@@ -330,8 +332,8 @@ integrationTests ref = do
       shasOf fs = [s | fr <- fs, Just s <- [frameCommitSha fr]]
       fieldStrs k fs = [s | fr <- fs, Just (VStr s) <- [frameField fr k]]
 
-  headSha <- head . lines <$> git ["rev-parse", "HEAD"]
-  rootSha <- head . lines <$> git ["rev-list", "--max-parents=0", "HEAD"]
+  headSha <- T.pack . head . lines <$> git ["rev-parse", "HEAD"]
+  rootSha <- T.pack . head . lines <$> git ["rev-list", "--max-parents=0", "HEAD"]
 
   fs1 <- frames "commits"
   check ref "commits count 3" (length fs1 == 3)
@@ -363,7 +365,7 @@ integrationTests ref = do
   check ref "via parent keeps duplicates and order"
     (fieldStrs "message" fs6d == ["add b", "initial commit"])
 
-  fs7 <- frames ("commits where sha " ++ take 8 rootSha)
+  fs7 <- frames ("commits where sha " ++ take 8 (T.unpack rootSha))
   check ref "sha prefix contains-match" (shasOf fs7 == [rootSha])
 
   fs8 <- frames "commits where message fix first"
@@ -406,7 +408,7 @@ integrationTests ref = do
   fs20 <- frames "blobs path \"a.txt\" via history"
   check ref "history of a.txt = 2 commits" (length fs20 == 2)
 
-  fs21 <- frames ("commits where sha " ++ take 8 rootSha ++ " via parent\x2020")
+  fs21 <- frames ("commits where sha " ++ take 8 (T.unpack rootSha) ++ " via parent\x2020")
   check ref "parent adjoint finds child" (fieldStrs "message" fs21 == ["add b"])
 
   fs22 <- frames "commits pick sha"

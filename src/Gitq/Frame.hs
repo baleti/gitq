@@ -1,7 +1,13 @@
+{-# LANGUAGE OverloadedStrings #-}
 -- | Frames: the flat, typed records every pipeline value is a list of.
 --
 -- A frame's /shape/ is the set of fields it carries; shapes are identified
 -- structurally (by field-set), not nominally — see doc/gitq.org.
+--
+-- All textual data is strict 'Text' (UTF-8 internally since text-2.0):
+-- field values are usually zero-copy slices of the one decoded git-output
+-- buffer, which is what keeps 81k-commit histories in memory-bandwidth
+-- territory instead of cons-cell territory.
 module Gitq.Frame
   ( Value (..)
   , Frame (..)
@@ -13,32 +19,33 @@ module Gitq.Frame
   ) where
 
 import qualified Data.Map.Strict as M
+import Data.Text (Text)
 
--- | A scalar field value.  Dates and SHAs are strings at runtime; their
+-- | A scalar field value.  Dates and SHAs are text at runtime; their
 -- scalar /type/ (which operators apply) lives in "Gitq.Registry".
 data Value
-  = VStr String
-  | VNum Int
-  | VBool Bool
+  = VStr !Text
+  | VNum !Int
+  | VBool !Bool
   deriving (Eq, Ord, Show)
 
 -- | One record flowing through a pipeline.  @frameParents@ is only ever
 -- non-empty on commit frames; it backs the computed @parents-count@ field
 -- and the @parent@ morphism.
 data Frame = Frame
-  { frameType    :: String            -- ^ runtime tag: commit, ref, worktree, blob, tree, diff, hunk, line, diff-line, projection
-  , frameParents :: [String]
-  , frameAttrs   :: M.Map String Value
+  { frameType    :: !Text             -- ^ runtime tag: commit, ref, worktree, blob, tree, diff, hunk, line, diff-line, projection
+  , frameParents :: ![Text]
+  , frameAttrs   :: !(M.Map Text Value)
   } deriving (Eq, Show)
 
 -- | Build a frame from a tag and attribute pairs.
-frame :: String -> [(String, Value)] -> Frame
+frame :: Text -> [(Text, Value)] -> Frame
 frame tag attrs = Frame tag [] (M.fromList attrs)
 
 -- | Extract a field from a frame.  @author@ falls back to @name@ (so ref
 -- frames answer author-flavored queries with their name); @parents-count@
 -- is computed from the parents list.
-frameField :: Frame -> String -> Maybe Value
+frameField :: Frame -> Text -> Maybe Value
 frameField f "author" =
   case M.lookup "author" (frameAttrs f) of
     Just v  -> Just v
@@ -51,7 +58,7 @@ frameField f field = M.lookup field (frameAttrs f)
 
 -- | The commit SHA a frame refers to: its own @commit-sha@ back-pointer if
 -- it has one (hunk, line, diff-line frames), else its @sha@.
-frameCommitSha :: Frame -> Maybe String
+frameCommitSha :: Frame -> Maybe Text
 frameCommitSha f =
   case frameField f "commit-sha" of
     Just (VStr s) -> Just s
@@ -60,8 +67,8 @@ frameCommitSha f =
         Just (VStr s) -> Just s
         _             -> Nothing
 
--- | String content of a value, if it is one.
-valueString :: Value -> Maybe String
+-- | Text content of a value, if it is one.
+valueString :: Value -> Maybe Text
 valueString (VStr s) = Just s
 valueString _        = Nothing
 

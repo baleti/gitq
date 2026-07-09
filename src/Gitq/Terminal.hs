@@ -8,18 +8,19 @@ module Gitq.Terminal
   ) where
 
 import Control.Exception (try, SomeException)
+import qualified Data.Text as T
 import System.Directory (findExecutable)
 import System.FilePath ((</>))
 import System.Process (readCreateProcess, proc)
 import Gitq.AST
 import Gitq.Frame
 import Gitq.Git
-import Gitq.Render (renderFramesText)
+import Gitq.Render (putUtf8, renderFramesText)
 
 -- | The first frame's commit SHA, or a loud error naming the terminal.
 firstSha :: String -> [Frame] -> IO String
 firstSha what frames = case frames of
-  (f : _) | Just sha <- frameCommitSha f -> pure sha
+  (f : _) | Just sha <- frameCommitSha f -> pure (T.unpack sha)
   _ -> gitqError ("gitq " ++ what ++ ": no commit in result")
 
 applyTerminal :: [Frame] -> Terminal -> String -> IO ()
@@ -27,7 +28,7 @@ applyTerminal frames term pipelineStr = case term of
   TShow ->
     if null frames
       then putStrLn ("gitq: (no results) — " ++ pipelineStr)
-      else putStr (renderFramesText frames)
+      else putUtf8 (renderFramesText frames)
 
   TCopy -> do
     sha <- firstSha "copy" frames
@@ -58,7 +59,7 @@ applyTerminal frames term pipelineStr = case term of
     -- doing something different from what the query says.
     mhead <- runGitString ["rev-parse", "HEAD"]
     sel <- case frames of
-      (f : _) -> pure (frameCommitSha f)
+      (f : _) -> pure (T.unpack <$> frameCommitSha f)
       []      -> pure Nothing
     case (sel, mhead) of
       (Just s, Just h) -> do
@@ -93,7 +94,7 @@ applyTerminal frames term pipelineStr = case term of
 
   TRemove -> do
     sha <- firstSha "remove" frames
-    full <- maybe (pure sha) pure =<< runGitString ["rev-parse", sha]
+    full <- maybe (pure sha) (pure . T.unpack) =<< runGitString ["rev-parse", sha]
     -- refuse on a dirty tree: a conflicted rebase over uncommitted work
     -- would be doing more than the query says
     dirty <- runGit ["status", "--porcelain"]
@@ -125,7 +126,7 @@ applyTerminal frames term pipelineStr = case term of
 
   TWorktree mpath -> do
     sha <- firstSha "worktree" frames
-    full <- maybe (pure sha) pure =<< runGitString ["rev-parse", sha]
+    full <- maybe (pure sha) (pure . T.unpack) =<< runGitString ["rev-parse", sha]
     path <- case mpath of
       Just p  -> pure p
       Nothing -> do

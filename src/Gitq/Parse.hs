@@ -25,6 +25,7 @@ module Gitq.Parse
 
 import Data.Char (isDigit)
 import Data.List (intercalate, isPrefixOf)
+import qualified Data.Text as T
 import qualified Text.Regex.TDFA.ReadRegex as RE
 import Gitq.AST
 import Gitq.Frame (Value (..))
@@ -201,10 +202,10 @@ parseCount tokens stepName = case tokens of
 -- | Parse a where-condition's raw value token into its runtime value.
 parseWhereValue :: String -> Value
 parseWhereValue tok
-  | "\"" `isPrefixOf` tok            = VStr (unquote tok)
-  | "/" `isPrefixOf` tok             = VStr (unregex tok)
+  | "\"" `isPrefixOf` tok            = VStr (T.pack (unquote tok))
+  | "/" `isPrefixOf` tok             = VStr (T.pack (unregex tok))
   | not (null tok), all isDigit tok  = VNum (read tok)
-  | otherwise                        = VStr tok
+  | otherwise                        = VStr (T.pack tok)
 
 -- | Parse where-conditions.  Step keywords and \/terminals act as stage
 -- boundaries and are never consumed as condition values.  Fields must be
@@ -293,8 +294,8 @@ parseWhere tokens fields =
                        -- when the executor matches the first frame
                        case (op, val) of
                          (OpRegex, VStr pat)
-                           | Left err <- RE.parseRegex pat ->
-                               perr ("gitq: invalid regex '" ++ pat ++ "': "
+                           | Left err <- RE.parseRegex (T.unpack pat) ->
+                               perr ("gitq: invalid regex '" ++ T.unpack pat ++ "': "
                                      ++ unwords (words (show err)))
                          _ -> Right ()
                        Right (Cond fieldTok op val, drop 1 rest1)

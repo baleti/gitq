@@ -6,7 +6,8 @@ module Gitq.Complete
   ( completeCandidates
   ) where
 
-import Data.List (nub)
+import qualified Data.Set as Set
+import qualified Data.Text as T
 import Gitq.Parse (inferFields)
 import Gitq.Registry
 import Gitq.Tokenize
@@ -121,7 +122,7 @@ completeRefs :: IO [String]
 completeRefs = do
   branches <- runGit ["branch", "--format=%(refname:short)"]
   tags <- runGit ["tag", "--list"]
-  pure (branches ++ tags)
+  pure (map T.unpack (branches ++ tags))
 
 -- | Value candidates for a where-condition, or [] for fields with no
 -- natural git-derivable value domain.
@@ -136,4 +137,12 @@ completeWhereValues field op = case (field, op) of
   (f, _) | f `elem` ["name", "branch"] -> completeRefs
   _ -> pure []
  where
-  dedup args = nub <$> runGit args
+  -- order-preserving Set-based dedup: plain nub is quadratic, and value
+  -- candidates can be one line per commit in the repo
+  dedup args = ordNub . map T.unpack <$> runGit args
+  ordNub = go Set.empty
+   where
+    go _ [] = []
+    go seen (x : xs)
+      | x `Set.member` seen = go seen xs
+      | otherwise           = x : go (Set.insert x seen) xs

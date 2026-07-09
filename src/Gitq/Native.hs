@@ -25,6 +25,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
 import Data.Maybe (isJust)
+import Data.Text (Text)
 import Data.Word (Word8)
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types (CInt (..), CSize (..))
@@ -46,7 +47,7 @@ nativeEnabled = True
 -- | Resolve full SHAs in-process: their ancestor closure when @walk@, just
 -- the SHAs themselves otherwise.  Nothing means "use the subprocess path"
 -- (native failure, no SHAs, or GITQ_NO_NATIVE set) — never an error.
-nativeCommits :: Bool -> [String] -> IO (Maybe [Frame])
+nativeCommits :: Bool -> [Text] -> IO (Maybe [Frame])
 nativeCommits _ [] = pure Nothing
 nativeCommits walk shas = do
   disabled <- lookupEnv "GITQ_NO_NATIVE"
@@ -54,7 +55,7 @@ nativeCommits walk shas = do
     then pure Nothing
     else
       withCString "." $ \repoC ->
-      withCString (unlines shas) $ \startsC ->
+      withCString (T.unpack (T.unlines shas)) $ \startsC ->
       alloca $ \lenP -> do
         ptr <- c_gitqNativeCommits repoC startsC (if walk then 1 else 0) lenP
         if ptr == nullPtr
@@ -64,16 +65,18 @@ nativeCommits walk shas = do
             bs <- BS.packCStringLen (castPtr ptr, fromIntegral len)
             c_gitqNativeFree ptr len
             let text = TE.decodeUtf8With TEE.lenientDecode bs
-            pure (Just [f | Just f <- map parseCommitLine (lines (T.unpack text))])
+            pure (Just [f | Just f <- map parseCommitLine (T.lines text)])
 
 #else
+
+import Data.Text (Text)
 
 nativeEnabled :: Bool
 nativeEnabled = False
 
 -- | Without the @native@ flag this backend does not exist; callers always
 -- take the subprocess path.
-nativeCommits :: Bool -> [String] -> IO (Maybe [Frame])
+nativeCommits :: Bool -> [Text] -> IO (Maybe [Frame])
 nativeCommits _ _ = pure Nothing
 
 #endif
