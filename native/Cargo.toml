@@ -1,0 +1,18 @@
+[package]
+name = "gitq-native"
+version = "0.1.0"
+edition = "2021"
+description = "In-process git backend for gitq (libgit2), linked into the Haskell binary"
+
+[lib]
+name = "gitq_native"
+crate-type = ["staticlib"]
+
+# default-features = false drops the ssh/https transports (and their
+# openssl build dependency) — gitq only ever reads the local object store.
+[dependencies]
+git2 = { version = "0.20", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+[profile.release]
+lto = true

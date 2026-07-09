@@ -10,11 +10,28 @@ description:
 license:            MIT
 author:             baleti
 maintainer:         baleti
-build-type:         Simple
+build-type:         Custom
 extra-doc-files:    README.org
+
+custom-setup
+    setup-depends:
+        Cabal     >=3.8,
+        base,
+        directory,
+        filepath,
+        process
 
 common warnings
     ghc-options: -Wall -Wincomplete-uni-patterns
+
+-- Link the Rust in-process git backend (native/, libgit2 via the git2
+-- crate).  Requires `cargo build --release` in native/ first — use `make
+-- native`.  Without the flag the build needs no Rust toolchain and gitq
+-- uses subprocess git everywhere.
+flag native
+    description: Link the Rust gitq-native backend for in-process commit walks
+    default:     False
+    manual:      True
 
 library
     import:           warnings
@@ -25,6 +42,7 @@ library
         Gitq.Exec
         Gitq.Frame
         Gitq.Git
+        Gitq.Native
         Gitq.Parse
         Gitq.Registry
         Gitq.Render
@@ -32,12 +50,19 @@ library
         Gitq.Tokenize
     build-depends:
         base       >=4.17 && <5,
+        bytestring,
         containers,
         directory,
         filepath,
         process,
         regex-tdfa,
+        text,
         time
+    -- the library dir is injected as an absolute path by Setup.hs
+    -- (ghc-pkg rejects relative extra-lib-dirs)
+    if flag(native)
+        cpp-options:     -DNATIVE
+        extra-libraries: gitq_native
     default-language: Haskell2010
 
 executable gitq
