@@ -1,0 +1,114 @@
+#+title: gitq — a typed, categorical query language for git
+#+author: baleti
+
+One query language over git's object graph: describe the data you want by
+composing small, typed operations, and end the pipeline with what should
+happen to the result.
+
+#+begin_example
+  gitq 'commits where author alice take 5 /show'
+  gitq 'HEAD via parent* where message "fix" /count'
+  gitq 'commits pickaxe "some-function" first /worktree'
+  gitq 'HEAD via tree.entries.history sort -date first /copy'
+#+end_example
+
+A pipeline is =source [step...] [/terminal]=: a source produces typed frames
+(=commits=, =branches=, =tags=, =refs=, =worktrees=, =blobs=, =HEAD=, any
+ref), steps transform them (=via= morphism paths like
+=parent[0].tree.entries[Blob]= compose and type-check segment by segment;
+=where= / =sort= / =pick= / =take= / =grep= / =pickaxe= behave as their
+SQL/PRQL/jq counterparts), and a =/terminal= acts on the result (=/show=
+=/copy= =/count= =/branch-off= =/reword= =/remove= =/worktree= ...).
+
+Everything is validated at parse time against the frame shape actually
+flowing through the pipeline — unknown fields, operators that don't fit a
+field's type, or morphisms applied to the wrong object are immediate,
+specific errors, never silent empty results.  There is no explicit
+=contains= keyword: a value right after a field with no recognized operator
+between them is an implicit substring match (=where author alice=), for
+field types where that makes sense.
+
+The full design — the typed categorical model, grammar, and extension
+guide — is in [[file:doc/gitq.org][doc/gitq.org]]; [[file:doc/examples.org][doc/examples.org]] is a set of worked examples
+with real captured outputs, including the pickaxe + =diff.lines= workflow
+for seeing matched diff content inline.
+
+* History
+
+gitq began as Emacs Lisp inside the [[https://github.com/baleti/git-branch-off][git-branch-off]] package
+(=git-branch-off-gitq.el=), where the language, its registries, and its
+fail-loud type discipline were designed and battle-tested.  This repository
+is the standalone rewrite in Haskell: the language is the same, the
+completion engine and parser live in one binary, and Emacs and zsh become
+thin integrations over it.
+
+* Installation
+
+Requires GHC ≥ 9.4 and cabal.
+
+#+begin_src sh
+  git clone https://github.com/baleti/gitq ~/gitq
+  cd ~/gitq
+  cabal install exe:gitq    # installs to ~/.cabal/bin (put it on $PATH)
+#+end_src
+
+Run the test suite with =cabal test=.
+
+* CLI usage
+
+#+begin_example
+  gitq '<pipeline>'             run a pipeline (from anywhere inside a repo)
+  gitq --preview '<pipeline>'   run source and steps, never apply a terminal
+  gitq --sexp '<pipeline>'      print frames as Emacs Lisp plists
+  gitq --complete '<prefix>'    completion candidates for a partial pipeline
+#+end_example
+
+* Emacs integration
+
+[[file:integrations/emacs/gitq.el][integrations/emacs/gitq.el]] provides =M-x gitq= with per-token contextual
+completion (candidates and annotations come from the binary, so they can
+never drift from the parser), a debounced live preview of results while
+typing, and a results buffer: =RET= visits the object at point (via Magit
+when available), =b= branches off, =c= copies the SHA.  Re-invoking =gitq=
+from a results buffer pre-fills the minibuffer with the query that built it.
+
+#+begin_src emacs-lisp
+;; Doom Emacs, packages.el
+(package! gitq
+  :recipe (:host github :repo "baleti/gitq"
+           :files ("integrations/emacs/gitq.el")
+           :branch "main"
+           :depth full))
+#+end_src
+
+The =gitq= binary must be on =exec-path= (or set =gitq-executable=).
+
+* Zsh completion
+
+#+begin_src sh
+  mkdir -p ~/.zsh/completions
+  ln -s ~/gitq/integrations/zsh/_gitq ~/.zsh/completions/_gitq
+  # in ~/.zshrc, before compinit:
+  #   fpath=(~/.zsh/completions $fpath)
+#+end_src
+
+Completion inside the pipeline argument delegates to =gitq --complete=, so
+zsh, Emacs, and the parser always agree on what is valid where.
+
+* Differences from the Emacs Lisp original
+
+The language is unchanged; a few behaviors are adapted to a real terminal,
+each failing loud rather than degrading silently:
+
+- =/copy= uses =wl-copy= / =xclip= / =xsel= / =pbcopy= (errors if none is
+  installed) instead of the Emacs kill ring; =/insert= prints the SHA.
+- =/branch-off= and =/mark= require their name/label argument (the original
+  prompted in the minibuffer); =/amend= and =/commit= without a message
+  open =$EDITOR=, as git normally would.
+- =/remove= is implemented directly (=git rebase --onto=) with clean-tree
+  and is-ancestor guards; =/reword= currently only rewords HEAD.
+- =/regex/= patterns and the =regex= operator are POSIX ERE (the original
+  used Emacs regexp syntax); =git grep= and pickaxe patterns were always
+  ERE in both.
+- =where date after/before= parses dates properly (timezone-aware) instead
+  of comparing lexically.

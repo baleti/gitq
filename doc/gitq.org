@@ -1,0 +1,221 @@
+#+title: GitQ — A Typed, Categorical Query Language for Git
+#+author: baleti
+
+* Why GitQ Exists
+
+Git tooling usually grows one command per task: a command to list commits by
+author, another to find the commit that introduced a string, another to add a
+worktree at some commit.  GitQ replaces that accretion with *one query
+language over git's object graph*: you describe the data you want by
+composing small, typed operations, and end the pipeline with what should
+happen to the result.
+
+#+begin_example
+  commits where author alice take 5 /show
+  HEAD via parent* where message "fix" /count
+  commits pickaxe "parse-morphism" first /worktree
+  HEAD via tree.entries.history sort -date first /copy
+#+end_example
+
+(Worked examples with real captured outputs live in [[file:examples.org][examples.org]].)
+
+The syntax borrows deliberately:
+
+- from *PRQL*: a pipeline is a flat sequence of stages read left to right,
+  each refining the previous one — no nesting, no subqueries.
+- from *jq*: paths (=parent=, =tree.entries[Blob]=) navigate a tree of
+  structured data; =/regex/= literals filter it.  (The historical
+  leading-dot spelling, =.parent=, =.tree.entries[Blob]=, still parses
+  identically — the dot was only ever needed to get =*=/=+=/=[=/=]=/a second
+  =.= into one token, and the tokenizer's bare-word class was widened to
+  allow those directly, so it's no longer required.)
+- from *SQL*: =where=, =sort=, and projection (=pick=) keep their familiar
+  relational meaning.
+- from *category theory*: the parts below that make the whole thing
+  compose and type-check rather than being a bag of special cases.
+
+* The Model
+
+** Objects: frame shapes
+
+Every value flowing through a pipeline is a list of *frames* — flat, typed
+records.  A frame's *shape* is the set of fields it carries:
+
+| Shape      | Fields                                                     | Produced by                       |
+|------------+------------------------------------------------------------+-----------------------------------|
+| commit     | sha author email date message tree parents-count           | =commits=, =HEAD=, =parent=, =history=, =commit= |
+| ref        | sha name reftype                                           | =branches=, =tags=, =refs=        |
+| worktree   | path sha branch detached modified staged untracked         | =worktrees=                       |
+| blob entry | sha path mode                                              | =blobs=, =tree.entries=           |
+| tree object| sha                                                        | =tree=                            |
+| diff       | sha path parent-sha                                        | =diff=                            |
+| hunk       | path start-line end-line commit-sha                        | =diff.hunks=                      |
+| line       | sha path line-number content commit-sha                    | =grep=                            |
+
+Shapes are identified *structurally* (by field-set), not nominally: two
+different shapes may share a runtime tag (a whole tree object and a subtree
+entry are both tagged =tree=) but their field-sets tell them apart, which is
+what the type checker actually uses.
+
+** Morphisms: typed maps between shapes
+
+A *morphism* maps one frame to a /list/ of frames of some (possibly
+different) shape: a commit has several parents, a tree has many entries, a
+path was touched by many commits.  Each morphism is registered
+(=Gitq.Registry=) with:
+
+- =morphismRequires= — the field its input shape must carry (its *domain*),
+- =morphismYields= — the field-set of its output shape (its *codomain*),
+- its implementation in =Gitq.Exec=.
+
+Because every morphism's output is the same kind of thing as its input (a
+frame list), morphisms compose generically: =via parent.tree= is =parent=
+then =tree=, and =via parent[0].diff main= or =tree.entries.history= work
+without any of those combinations being special-cased.  Execution lifts the
+one-frame map pointwise over the incoming list and appends the results —
+composition in the Kleisli category of the list monad, which is precisely why
+chaining needs no plumbing.
+
+=parent†= is the *adjoint* of =parent=: instead of "the commits this one
+points to", "the commits that point to this one" (children-of).
+
+The path is parsed by greedy longest-match against surface forms, so the
+fused forms (=tree.entries=, =diff.hunks=) remain single efficient
+morphisms while still reading — and type-checking — exactly as their name
+says.  Written with the leading dot instead (=.parent.tree=,
+=.tree.entries=, ...), it's normalized to the same form before matching —
+see =parseMorphismPath= in =Gitq.Registry=.
+
+** Relational steps
+
+=where=, =sort=, =pick=, =take=, =skip=, =first=, =last=, =path= transform a
+frame list without changing what kind of graph object it describes; =grep=
+and =pickaxe= search content and produce line frames / filter commits.
+These are the PRQL/SQL-flavored part of the language and are shape-checked
+like everything else.
+
+=where= has no explicit =contains= keyword.  A value right after a field
+with no recognized operator between them (=operatorSignature=: =====,
+=!==, =>=, =<=, =>==, =<==, =regex=, =after=, =before=, =within=, =is=) is an
+implicit substring match, for field types where that's meaningful (string,
+sha) — =where author alice= means "author contains alice", not "equals",
+since bare equality would need =where author == alice= explicitly.
+Date/number/flag fields have no such fallback: an unrecognized token there
+is still an unknown-operator parse error, same as a genuinely bad operator
+keyword.
+
+** Terminals
+
+A =/terminal= consumes the pipeline's final value and performs an effect:
+display (=/show=), clipboard (=/copy=), repository mutation (=/branch-off=,
+=/reword=, =/remove= — alias =/delete=, =/worktree=, ...).  Terminals live in
+a registry (=terminalNames= in =Gitq.Registry= plus the closed =Terminal=
+AST type) that is the single source of truth: the parser, the completion
+candidates, and the executor all derive from it.
+
+Two terminals act on the current worktree/HEAD rather than the selected
+frames: =/stage= and =/commit=.  =/amend= is guarded: if the pipeline
+selected a commit that is not HEAD, it errors instead of quietly amending
+HEAD anyway.  (CLI adaptations of individual terminals — clipboard tools,
+required arguments, =$EDITOR= — are listed in the README.)
+
+* The Type Discipline
+
+Typing happens at *parse time*, in two layers:
+
+1. *Structural field-sets.*  The parser threads the current shape's
+   field-set through every stage.  A =where=/=sort=/=pick= referencing a
+   field the current shape doesn't carry, or a morphism whose domain
+   is missing (=branches via tree= — ref frames have no tree), is an
+   immediate error naming the fields the frame actually has.  Morphism
+   chains fold this check segment by segment.
+
+2. *Scalar types.*  Every field has a scalar type (=fieldType=:
+   string, sha, date, number, flag) and every where-operator declares which
+   types it accepts (=operatorSignature=).  =where date > "2020"=
+   is rejected suggesting =after/before/within=; =where parents-count ==
+   "two"= is rejected as not a number; a bare =where author= is rejected
+   because only flag fields can be bare conditions.  =sort= picks its
+   comparator (numeric vs. lexical) from the same table.
+
+* Fail Loud
+
+The language's error philosophy, learned the hard way: *a query that cannot
+mean what it says must error at parse time; a terminal that cannot do what
+it says must error before doing something else.*  Every one of these used to
+fail silently and is now a loud error, each with a regression test:
+
+- unconsumed tokens after a stage (missing quotes)
+- unknown where-operators; operator/field-type mismatches; missing values
+- bare conditions on non-flag fields
+- =pick= with no fields (used to project everything away)
+- =/delete= (parsed, then fell through to =/show=)
+- =/worktree= (completable and documented, but unparseable)
+- terminals whose backing function isn't loaded
+- unknown step/terminal ops inside the executor
+
+* Extending GitQ
+
+- *New morphism*: add a constructor to =Morphism= (=Gitq.AST=), its domain
+  and codomain to =morphismRequires=/=morphismYields=, its surface form to
+  =parseMorphismPath='s form table (all =Gitq.Registry=), and its executor
+  branch to =execVia= (=Gitq.Exec=).  GHC's exhaustiveness checking makes
+  every place that needs a branch a compile error until it has one;
+  completion, type checking, and chain composition pick the rest up from
+  the registry.
+- *New terminal*: add a constructor to =Terminal= (=Gitq.AST=), its name to
+  =terminalNames= and its parser case to =parseTerminal= (=Gitq.Parse=),
+  and its effect branch to =applyTerminal= (=Gitq.Terminal=).
+- *New field*: add it to the relevant shape's field-set constant, to
+  =fieldNames=, and to =fieldType='s table (all =Gitq.Registry=).
+
+The registry-coherence tests (=registryTests= in =test/Spec.hs=) fail if
+these tables drift apart — every completion candidate must parse, every
+parseable morphism must have a registered domain, every operator must have
+a signature.
+
+* Known Limitations (honest list)
+
+- Worktree flags =modified/staged/untracked= are declared in the shape but
+  not yet populated by the worktree fetcher — they type-check and always
+  read as false until working-tree status is wired in.
+- =/squash= is a stub that reports what it would do.
+- =/reword= only rewords HEAD (via =git commit --amend=); rewording an
+  older commit needs the rebase machinery the Emacs Lisp original delegated
+  to git-branch-off, not yet ported.
+- A standalone =path GLOB= step cannot directly follow a =where= clause on a
+  path-carrying shape — =path= chains as a where-field there instead, e.g.
+  =where modified path "*.el"= means "modified is true AND path contains the
+  literal substring *.el", not a glob filter.  Put the =path= step first, or
+  use =where path regex /\.el$/= for pattern matching.  (This is inherent to
+  =path= being both a field and a step keyword.)
+- =where date after/before= parses dates (timezone-aware), but =sort date=
+  is still lexical over git's ISO-8601 =%ai= format — chronological within
+  a timezone, not across mixed-timezone histories.
+- =diff.hunks= is fused; there is no standalone =hunks= morphism on diff
+  frames yet.
+
+* File Map
+
+The library (=src/Gitq/=) mirrors the pipeline:
+
+| Module          | Role                                                       |
+|-----------------+------------------------------------------------------------|
+| =Gitq.Frame=    | frames, values, field access                               |
+| =Gitq.AST=      | pipeline/source/step/morphism/terminal types               |
+| =Gitq.Registry= | field-sets, scalar types, operator signatures, morphism    |
+|                 | domains/codomains and surface forms, terminal names,       |
+|                 | completion candidate sets and descriptions                 |
+| =Gitq.Tokenize= | the flat tokenizer (quotes, /regex/ vs /terminal, ...)     |
+| =Gitq.Parse=    | the parser and both typing layers; =inferFields=           |
+| =Gitq.Git=      | git execution (stderr discarded) and data fetchers         |
+| =Gitq.Exec=     | source/step/morphism executors, diff parsing               |
+| =Gitq.Complete= | context-aware completion, replaying the real parser        |
+| =Gitq.Render=   | plain-text and s-expression frame rendering                |
+| =Gitq.Terminal= | terminal effects for the CLI                               |
+
+=app/Main.hs= is the CLI entry point (=--complete=, =--sexp=, =--preview=);
+tests in =test/Spec.hs= (tokenizer, parser, the fail-loud error catalogue,
+grammar disambiguation properties P1–P7, registry coherence, and
+integration against a scratch repository); Emacs integration in
+=integrations/emacs/gitq.el=; zsh completion in =integrations/zsh/_gitq=.
