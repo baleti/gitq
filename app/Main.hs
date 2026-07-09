@@ -11,7 +11,7 @@ import Gitq.Exec (execPipeline)
 import Gitq.Git (GitqError (..), toplevel)
 import Gitq.Parse (parsePipeline)
 import Gitq.Registry (describeToken)
-import Gitq.Render (renderFramesSexp, renderFramesText)
+import Gitq.Render (putUtf8, renderFramesSexp, renderFramesText)
 import Gitq.Terminal (applyTerminal)
 
 usage :: IO ()
@@ -78,9 +78,9 @@ run sexp preview pipeline = do
   setCurrentDirectory top
   (frames, mterm) <- execPipeline parsed
   let display
-        | sexp = putStr (renderFramesSexp frames)
+        | sexp = putUtf8 (renderFramesSexp frames)
         | null frames = putStrLn ("gitq: (no results) — " ++ pipeline)
-        | otherwise = putStr (renderFramesText frames)
+        | otherwise = putUtf8 (renderFramesText frames)
   case (preview, mterm) of
     (True, _) -> display
     (False, Just term)
