@@ -209,6 +209,7 @@ The library (=src/Gitq/=) mirrors the pipeline:
 | =Gitq.Tokenize= | the flat tokenizer (quotes, /regex/ vs /terminal, ...)     |
 | =Gitq.Parse=    | the parser and both typing layers; =inferFields=           |
 | =Gitq.Git=      | git execution (stderr discarded) and data fetchers         |
+| =Gitq.Native=   | FFI boundary to the optional Rust backend (=-fnative=)     |
 | =Gitq.Exec=     | source/step/morphism executors, diff parsing               |
 | =Gitq.Complete= | context-aware completion, replaying the real parser        |
 | =Gitq.Render=   | plain-text and s-expression frame rendering                |
@@ -219,3 +220,11 @@ tests in =test/Spec.hs= (tokenizer, parser, the fail-loud error catalogue,
 grammar disambiguation properties P1–P7, registry coherence, and
 integration against a scratch repository); Emacs integration in
 =integrations/emacs/gitq.el=; zsh completion in =integrations/zsh/_gitq=.
+
+=native/= is the optional Rust backend (libgit2 via the =git2= crate,
+built as a static library and linked in by the =native= cabal flag — see
+the README).  Its contract with =Gitq.Native= is a single C function
+returning commit records in the exact byte layout of the =git log= format
+string above, so both backends are parsed by the same
+=Gitq.Git.parseCommitLine= and cannot drift; any native failure falls
+back to subprocess git.
