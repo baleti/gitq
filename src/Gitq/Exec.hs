@@ -22,6 +22,7 @@ import Text.Regex.TDFA (Regex, makeRegex, match, (=~))
 import Gitq.AST
 import Gitq.Frame
 import Gitq.Git
+import Gitq.Native (nativeCommits)
 import Gitq.Registry (FieldType (..), fieldType)
 
 -- | Execute a parsed pipeline's source and steps, returning the final
@@ -112,7 +113,7 @@ execVia frames m = case m of
   concatMapM f = fmap concat . mapM f
 
   batchLookup shas = do
-    cmap <- fetchCommitMap shas
+    cmap <- commitMapFor shas
     pure [c | sha <- shas, Just c <- [M.lookup sha cmap]]
 
   treeOf f = case frameField f "tree" of
@@ -171,7 +172,7 @@ execVia frames m = case m of
 viaHistory :: [Frame] -> IO [Frame]
 viaHistory frames = do
   pathShas <- mapM shasOf frames
-  cmap <- fetchCommitMap (concatMap snd pathShas)
+  cmap <- commitMapFor (concatMap snd pathShas)
   pure [ c { frameAttrs = M.insert "path" (VStr path) (frameAttrs c) }
        | (path, shas) <- pathShas
        , sha <- shas
@@ -184,22 +185,41 @@ viaHistory frames = do
       pure (path, shas)
     _ -> pure ("", [])
 
+-- | SHA-keyed commit map for a batch of full SHAs: the in-process native
+-- backend when linked and working, else one subprocess ('fetchCommitMap').
+commitMapFor :: [String] -> IO (M.Map String Frame)
+commitMapFor shas = do
+  let uniq = S.toList (S.fromList shas)
+  mNative <- nativeCommits False uniq
+  case mNative of
+    Just fs -> pure (mapBySha fs)
+    Nothing -> fetchCommitMap shas
+
+mapBySha :: [Frame] -> M.Map String Frame
+mapBySha fs =
+  M.fromList [(sha, f) | f <- fs, Just (VStr sha) <- [frameField f "sha"]]
+
 -- | Walk parent links from the given frames, returning all reachable
 -- commits in discovery order.  When @excludeStart@ ('parent+'), the start
 -- frames themselves are excluded.
 --
--- The reachable closure is materialized up front in two git processes
--- (@rev-list --stdin@ for the SHA set, one batched log for their frames);
--- the walk itself then replays the original one-process-per-commit
--- algorithm purely in memory, preserving its discovery order exactly.
+-- The reachable closure is materialized up front — in process via the
+-- native backend when available, else in two git processes (@rev-list
+-- --stdin@ for the SHA set, one batched log for their frames); the walk
+-- itself then replays the original one-process-per-commit algorithm purely
+-- in memory, preserving its discovery order exactly.
 traverseParentsStar :: [Frame] -> Bool -> IO [Frame]
 traverseParentsStar frames excludeStart = do
   let startShas = [s | f <- frames, Just (VStr s) <- [frameField f "sha"]]
   if null startShas
     then pure []
     else do
-      reachable <- runGitStdin ["rev-list", "--stdin"] (unlines startShas)
-      cmap <- fetchCommitMap reachable
+      mNative <- nativeCommits True startShas
+      cmap <- case mNative of
+        Just fs -> pure (mapBySha fs)
+        Nothing -> do
+          reachable <- runGitStdin ["rev-list", "--stdin"] (unlines startShas)
+          fetchCommitMap reachable
       pure (reverse (goStarts cmap startShas S.empty []))
  where
   goStarts _ [] _ acc = acc
