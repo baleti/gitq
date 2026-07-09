@@ -1,6 +1,7 @@
 -- | Git execution layer and data fetchers.
 module Gitq.Git
   ( runGit
+  , runGitStdin
   , runGitString
   , runGitInherit
   , toplevel
@@ -8,6 +9,7 @@ module Gitq.Git
   , gitqError
   , fetchCommits
   , fetchCommit
+  , fetchCommitMap
   , fetchBranches
   , fetchTags
   , fetchRefs
@@ -19,6 +21,7 @@ module Gitq.Git
 
 import Control.Exception (Exception, throwIO)
 import qualified Data.Map.Strict as M
+import qualified Data.Set as S
 import Data.List (isInfixOf, stripPrefix, tails)
 import System.Exit (ExitCode (..))
 import System.Process (proc, readCreateProcessWithExitCode, waitForProcess, withCreateProcess)
@@ -39,8 +42,14 @@ gitqError = throwIO . GitqError
 -- message (e.g. an invalid revision) gets split into lines and silently
 -- returned as if it were real data.
 runGit :: [String] -> IO [String]
-runGit args = do
-  (_code, out, _err) <- readCreateProcessWithExitCode (proc "git" args) ""
+runGit args = runGitStdin args ""
+
+-- | Like 'runGit', feeding the given input to git's stdin — used with
+-- @--stdin@ to pass arbitrarily many revisions in a single process,
+-- bypassing the argv length limit.
+runGitStdin :: [String] -> String -> IO [String]
+runGitStdin args input = do
+  (_code, out, _err) <- readCreateProcessWithExitCode (proc "git" args) input
   pure (filter (not . null) (lines out))
 
 -- | Run git; return the first line of output, or Nothing.
@@ -106,6 +115,25 @@ fetchCommits range = do
         Nothing -> ["log", fmt]
   ls <- runGit args
   pure [f | Just f <- map parseCommitLine ls]
+
+-- | Many commits by full SHA in a single git process, as a SHA-keyed map.
+-- One @git log --no-walk --stdin@ replaces one process per commit — the
+-- difference between milliseconds and minutes on ancestor-closure walks.
+-- Callers must pass full SHAs (the %H\/%P values git itself printed);
+-- unresolvable input would fail the whole batch, unlike 'fetchCommit'
+-- which probes one tolerant rev-parse.
+fetchCommitMap :: [String] -> IO (M.Map String Frame)
+fetchCommitMap shas
+  | null shas = pure M.empty
+  | otherwise = do
+      let uniq = S.toList (S.fromList shas)
+      ls <- runGitStdin ["log", "--no-walk=unsorted", "--format=" ++ logFormat, "--stdin"]
+                        (unlines uniq)
+      pure (M.fromList
+              [ (sha, f)
+              | Just f <- map parseCommitLine ls
+              , Just (VStr sha) <- [M.lookup "sha" (frameAttrs f)]
+              ])
 
 -- | A single commit by SHA or ref, or Nothing.
 fetchCommit :: String -> IO (Maybe Frame)
