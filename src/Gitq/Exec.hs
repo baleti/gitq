@@ -424,7 +424,11 @@ execPickaxe frames pat regex = do
   if null shas
     then pure []
     else do
-      hits <- runGit (["log", if regex then "-G" else "-S", pat, "--format=%H", "--no-walk"] ++ shas)
+      -- SHAs go through --stdin, never argv: a whole-history pickaxe (81k
+      -- SHAs on git/git) exceeds the OS argument-list limit as arguments
+      hits <- runGitStdin
+                ["log", if regex then "-G" else "-S", pat, "--format=%H", "--no-walk", "--stdin"]
+                (unlines shas)
       let hitSet = S.fromList hits
       pure [ f | f <- frames
            , Just (VStr s) <- [frameField f "sha"], s `S.member` hitSet ]
