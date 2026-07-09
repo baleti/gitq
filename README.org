@@ -57,8 +57,8 @@ Run the test suite with =cabal test=.
 ** Optional: the Rust in-process git backend
 
 With a Rust toolchain installed, =make install-native= (or =cabal
-install -fnative=) links a small Rust static library (=native/=, libgit2
-via the =git2= crate) into the same =gitq= binary.  Commit-batch
+install -fnative=) links a small Rust static library (=native/=, gix)
+into the same =gitq= binary.  Commit-batch
 resolution and =parent*=/=parent+= closures then run in-process instead
 of through git subprocesses — same output (the Rust side emits records in
 the exact byte format of gitq's =git log= format string, parsed by the
@@ -67,11 +67,14 @@ any native-side failure.  =GITQ_NO_NATIVE=1= forces the fallback at
 runtime, so one binary can A/B itself.
 
 Where it matters: fixed-cost latency on small queries (a small repo's
-=parent*= closure drops ~52 ms → ~27 ms — the live-preview path), and as
-the established boundary for moving further hot paths into Rust if a
-workload ever demands it.  At bulk scale (measured on git/git's 81k
-commits) both backends are currently equivalent — the bottleneck there is
-frame construction on the Haskell side, not the backend.
+=parent*= closure drops ~52 ms → ~27 ms — the live-preview path), and
+deep-history walks: gix enumerates git/git's 81,470-commit closure in
+0.08 s when a commit-graph is present (=git commit-graph write
+--reachable=; git maintains it automatically on gc) — 20× faster than
+libgit2 and faster than =git rev-list= itself (measured in
+=native/examples/walk.rs= vs =walk_gix.rs=).  End-to-end bulk queries are
+currently bounded by frame construction on the Haskell side rather than
+the backend; the boundary is in place for when that moves.
 
 * CLI usage
 

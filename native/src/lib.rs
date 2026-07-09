@@ -7,56 +7,108 @@
 //! (`%H%x00%ae%x00%an%x00%ai%x00%P%x00%T%x00%s`, one record per line), so
 //! the Haskell side parses both backends with the same function.
 //!
+//! Implemented with gix, chosen over git2/libgit2 on measurement (see
+//! examples/walk.rs vs examples/walk_gix.rs): on git/git's 81k commits,
+//! gix walks the closure in 0.08 s with a commit-graph present (0.7 s
+//! without) where libgit2 takes 1.7 s and ignores the graph entirely.
+//!
 //! Errors never cross the boundary: any failure (unreadable repo, bad SHA,
 //! panic) returns NULL and the caller falls back to the subprocess path.
 
-use git2::{Oid, Repository, Sort};
+use gix::ObjectId;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::panic::AssertUnwindSafe;
 
-/// Append one commit in the shared record format, or nothing if the SHA
-/// doesn't resolve (matching `git log --no-walk` skipping unknown input is
-/// not needed — unknown SHAs simply produce no record, and the Haskell
-/// side reassembles by map lookup).
-fn push_commit(repo: &Repository, oid: Oid, out: &mut Vec<u8>) {
-    let commit = match repo.find_commit(oid) {
-        Ok(c) => c,
+/// Append `chrono`-formatted `%ai` (author date, "YYYY-MM-DD HH:MM:SS
+/// +ZZZZ" in the author's own offset) from the raw signature time bytes
+/// ("1712345678 +0200").
+fn push_date(raw: &[u8], out: &mut Vec<u8>) {
+    let parsed = (|| {
+        let s = std::str::from_utf8(raw).ok()?;
+        let mut it = s.split_whitespace();
+        let secs: i64 = it.next()?.parse().ok()?;
+        let off = it.next().unwrap_or("+0000").as_bytes();
+        let offset_secs: i32 = if off.len() == 5 {
+            let sign = if off[0] == b'-' { -1 } else { 1 };
+            let hh = (off[1] - b'0') as i32 * 10 + (off[2] - b'0') as i32;
+            let mm = (off[3] - b'0') as i32 * 10 + (off[4] - b'0') as i32;
+            sign * (hh * 3600 + mm * 60)
+        } else {
+            0
+        };
+        let utc = chrono::DateTime::from_timestamp(secs, 0)?;
+        let offset = chrono::FixedOffset::east_opt(offset_secs)?;
+        Some(
+            utc.with_timezone(&offset)
+                .format("%Y-%m-%d %H:%M:%S %z")
+                .to_string(),
+        )
+    })();
+    if let Some(s) = parsed {
+        out.extend_from_slice(s.as_bytes());
+    }
+}
+
+/// Append one commit in the shared record format.  Unknown/undecodable
+/// SHAs simply produce no record (the Haskell side reassembles by map
+/// lookup, so a missing record is a missing commit, same as the
+/// subprocess path).  `parents` come from the walk when available,
+/// avoiding a second decode.
+fn push_commit(
+    repo: &gix::Repository,
+    id: ObjectId,
+    walk_parents: Option<&[ObjectId]>,
+    out: &mut Vec<u8>,
+) {
+    let commit = match repo
+        .find_object(id)
+        .ok()
+        .and_then(|o| o.try_into_commit().ok())
+    {
+        Some(c) => c,
+        None => return,
+    };
+    let decoded = match commit.decode() {
+        Ok(d) => d,
         Err(_) => return,
     };
-    out.extend_from_slice(commit.id().to_string().as_bytes());
+    out.extend_from_slice(id.to_hex().to_string().as_bytes());
     out.push(0);
-    let author = commit.author();
-    out.extend_from_slice(author.email_bytes());
-    out.push(0);
-    out.extend_from_slice(author.name_bytes());
-    out.push(0);
-    // git's %ai: author date as "YYYY-MM-DD HH:MM:SS +ZZZZ" in the
-    // author's own utc offset
-    let when = author.when();
-    if let Some(utc) = chrono::DateTime::from_timestamp(when.seconds(), 0) {
-        let offset = chrono::FixedOffset::east_opt(when.offset_minutes() * 60)
-            .unwrap_or_else(|| chrono::FixedOffset::east_opt(0).unwrap());
-        let local = utc.with_timezone(&offset);
-        out.extend_from_slice(local.format("%Y-%m-%d %H:%M:%S %z").to_string().as_bytes());
+    let author = decoded.author();
+    match author {
+        Ok(a) => {
+            out.extend_from_slice(a.email);
+            out.push(0);
+            out.extend_from_slice(a.name);
+            out.push(0);
+            push_date(a.time.as_ref(), out);
+            out.push(0);
+        }
+        Err(_) => {
+            out.push(0);
+            out.push(0);
+            out.push(0);
+        }
     }
-    out.push(0);
     let mut first = true;
-    for p in commit.parent_ids() {
+    let mut push_parent = |p: &ObjectId| {
         if !first {
             out.push(b' ');
         }
         first = false;
-        out.extend_from_slice(p.to_string().as_bytes());
+        out.extend_from_slice(p.to_hex().to_string().as_bytes());
+    };
+    match walk_parents {
+        Some(ps) => ps.iter().for_each(&mut push_parent),
+        None => decoded.parents().collect::<Vec<_>>().iter().for_each(&mut push_parent),
     }
     out.push(0);
-    out.extend_from_slice(commit.tree_id().to_string().as_bytes());
+    out.extend_from_slice(decoded.tree().to_hex().to_string().as_bytes());
     out.push(0);
     // %s (the subject): first paragraph, newlines collapsed to spaces —
-    // libgit2's summary has the same semantics
-    if let Some(s) = commit.summary_bytes() {
-        out.extend_from_slice(s);
-    }
+    // gix's summary has the same semantics
+    out.extend_from_slice(decoded.message().summary().as_ref());
     out.push(b'\n');
 }
 
@@ -65,25 +117,28 @@ fn run(repo_path: &CStr, starts: &CStr, walk: c_int) -> Option<Vec<u8>> {
     let input = starts.to_str().ok()?;
     let mut ids = Vec::new();
     for token in input.split_whitespace() {
-        ids.push(Oid::from_str(token).ok()?);
+        ids.push(ObjectId::from_hex(token.as_bytes()).ok()?);
     }
     if ids.is_empty() {
         return None;
     }
-    let repo = Repository::discover(path).ok()?;
+    let mut repo = gix::discover(path).ok()?;
+    // delta chains resolve against cached bases instead of re-inflating
+    repo.object_cache_size_if_unset(64 * 1024 * 1024);
     let mut out = Vec::new();
     if walk != 0 {
-        let mut rw = repo.revwalk().ok()?;
-        rw.set_sorting(Sort::NONE).ok()?;
-        for id in &ids {
-            rw.push(*id).ok()?;
-        }
-        for oid in rw {
-            push_commit(&repo, oid.ok()?, &mut out);
+        let walk = repo
+            .rev_walk(ids)
+            .use_commit_graph(true)
+            .all()
+            .ok()?;
+        for info in walk {
+            let info = info.ok()?;
+            push_commit(&repo, info.id, Some(&info.parent_ids), &mut out);
         }
     } else {
         for id in ids {
-            push_commit(&repo, id, &mut out);
+            push_commit(&repo, id, None, &mut out);
         }
     }
     Some(out)

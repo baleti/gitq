@@ -11,8 +11,12 @@ crate-type = ["staticlib"]
 # default-features = false drops the ssh/https transports (and their
 # openssl build dependency) — gitq only ever reads the local object store.
 [dependencies]
-git2 = { version = "0.20", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+gix = { version = "0.85.0", default-features = false, features = ["revision", "max-performance-safe", "sha1"] }
+
+# only for examples/walk.rs, the libgit2-vs-gix comparison benchmark
+[dev-dependencies]
+git2 = { version = "0.20", default-features = false }
 
 [profile.release]
 lto = true
