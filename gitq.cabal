@@ -1,0 +1,65 @@
+cabal-version:      3.0
+name:               gitq
+version:            0.1.0
+synopsis:           GitQ — a typed, categorical query language for git
+description:
+  One query language over git's object graph: describe the data you want by
+  composing small, typed operations, and end the pipeline with what should
+  happen to the result.  Haskell rewrite of the original Emacs Lisp
+  implementation from the git-branch-off package.
+license:            MIT
+author:             baleti
+maintainer:         baleti
+build-type:         Simple
+extra-doc-files:    README.org
+
+common warnings
+    ghc-options: -Wall -Wincomplete-uni-patterns
+
+library
+    import:           warnings
+    hs-source-dirs:   src
+    exposed-modules:
+        Gitq.AST
+        Gitq.Complete
+        Gitq.Exec
+        Gitq.Frame
+        Gitq.Git
+        Gitq.Parse
+        Gitq.Registry
+        Gitq.Render
+        Gitq.Terminal
+        Gitq.Tokenize
+    build-depends:
+        base       >=4.17 && <5,
+        containers,
+        directory,
+        filepath,
+        process,
+        regex-tdfa,
+        time
+    default-language: Haskell2010
+
+executable gitq
+    import:           warnings
+    hs-source-dirs:   app
+    main-is:          Main.hs
+    build-depends:
+        base,
+        directory,
+        gitq
+    default-language: Haskell2010
+
+test-suite gitq-test
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Spec.hs
+    build-depends:
+        base,
+        containers,
+        directory,
+        filepath,
+        gitq,
+        process
+    default-language: Haskell2010
