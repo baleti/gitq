@@ -54,6 +54,25 @@ Requires GHC ≥ 9.4 and cabal.
 
 Run the test suite with =cabal test=.
 
+** Optional: the Rust in-process git backend
+
+With a Rust toolchain installed, =make install-native= (or =cabal
+install -fnative=) links a small Rust static library (=native/=, libgit2
+via the =git2= crate) into the same =gitq= binary.  Commit-batch
+resolution and =parent*=/=parent+= closures then run in-process instead
+of through git subprocesses — same output (the Rust side emits records in
+the exact byte format of gitq's =git log= format string, parsed by the
+same function), with the subprocess path kept as an automatic fallback on
+any native-side failure.  =GITQ_NO_NATIVE=1= forces the fallback at
+runtime, so one binary can A/B itself.
+
+Where it matters: fixed-cost latency on small queries (a small repo's
+=parent*= closure drops ~52 ms → ~27 ms — the live-preview path), and as
+the established boundary for moving further hot paths into Rust if a
+workload ever demands it.  At bulk scale (measured on git/git's 81k
+commits) both backends are currently equivalent — the bottleneck there is
+frame construction on the Haskell side, not the backend.
+
 * CLI usage
 
 #+begin_example
