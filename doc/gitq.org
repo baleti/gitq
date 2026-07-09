@@ -221,9 +221,8 @@ grammar disambiguation properties P1–P7, registry coherence, and
 integration against a scratch repository); Emacs integration in
 =integrations/emacs/gitq.el=; zsh completion in =integrations/zsh/_gitq=.
 
-=native/= is the optional Rust backend (libgit2 via the =git2= crate,
-built as a static library and linked in by the =native= cabal flag — see
-the README).  Its contract with =Gitq.Native= is a single C function
+=native/= is the optional Rust backend (gix, built as a static library
+and linked in by the =native= cabal flag — see the README).  Its contract with =Gitq.Native= is a single C function
 returning commit records in the exact byte layout of the =git log= format
 string above, so both backends are parsed by the same
 =Gitq.Git.parseCommitLine= and cannot drift; any native failure falls
