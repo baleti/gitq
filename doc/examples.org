@@ -1,0 +1,223 @@
+#+title: GitQ — Worked Examples
+#+author: baleti
+
+Every example below was run against this repository's own history, so you
+can reproduce them all here.  Each works identically in two forms:
+
+- *CLI*: =gitq 'PIPELINE'= from anywhere inside the repo.
+- *Emacs*: =M-x gitq=, then type the pipeline (live completion per token,
+  live preview of results while you type; RET runs it for real).
+
+Sample outputs were captured against this repo's own history right after
+the initial port landed — counts and hashes will have moved on, the shapes
+won't.  In Emacs, results land in the =*gitq*= buffer; the CLI prints the
+same frames as plain text.
+
+* Basics
+
+#+begin_example
+  $ gitq 'commits /count'
+  5
+
+  $ gitq 'commits take 3'
+  27d45ac6  claude                2026-07-09  docs(gitq): README and the design doc, adapted from git-branch-off
+  e35abf67  claude                2026-07-09  feat(zsh): completion, carried over from git-branch-off
+  ec015b4e  claude                2026-07-09  feat(emacs): gitq.el — Emacs front-end over the gitq binary
+
+  $ gitq 'branches'
+  main                                      27d45ac6
+#+end_example
+
+Other sources: =tags=, =refs=, =worktrees=, =blobs= (HEAD's files), =HEAD=,
+or any ref/branch/SHA by name.
+
+* Filtering with =where= (typed)
+
+Conditions are validated against the fields the current frame actually
+carries, and against each field's scalar type — see the error section at the
+bottom for what happens when they don't fit.  There is no explicit
+=contains= keyword: a value directly after a field with no recognized
+operator between them is an implicit substring match.
+
+#+begin_example
+  $ gitq 'commits where message regex /^feat/ /count'
+  3
+
+  $ gitq 'commits where author claude, date within "1 week" /count'
+  5
+
+  $ gitq 'commits where parents-count > 1 /count'      # merge commits
+  0
+#+end_example
+
+Comma chains conditions (AND).  Values: ="quoted strings"=, =/regexes/=
+(with =regex=; POSIX ERE), bare numbers, bare words (implicit substring
+match — =where author alice= is what =where author contains alice= used to
+be).  Date operators: =after=, =before=, =within "N days/weeks/months/years"=.
+
+* Revision ranges
+
+#+begin_example
+  $ gitq 'commits in main~3..main /count'
+  3
+#+end_example
+
+Anything =git log= accepts as a range works: =main..feature=, =HEAD~10..=,
+a single ref.
+
+* Navigating the object graph with =via=
+
+Morphism paths compose: each segment is type-checked against what the
+previous one produces.  Written bare (=parent=, =tree.entries[Blob]=, ...) or
+with the historical leading dot (=.parent=, =.tree.entries[Blob]=, ...) — both
+parse identically.
+
+#+begin_example
+  $ gitq 'HEAD via parent.parent'                      # grandparent
+  ec015b4e  claude                2026-07-09  feat(emacs): gitq.el — Emacs front-end over the gitq binary
+
+  $ gitq 'HEAD via tree.entries[Blob] path "integrations/*"'
+  integrations/emacs/gitq.el
+  integrations/zsh/_gitq
+
+  $ gitq 'blobs path "doc/*" via history take 3'       # commits that touched doc/
+  27d45ac6  claude                2026-07-09  docs(gitq): README and the design doc, adapted from git-branch-off
+#+end_example
+
+Useful morphisms: =parent= (also =parent[N]=, =parent*= ancestors,
+=parent†= children-of), =tree=, =tree.entries[Blob|Tree]=, =diff=,
+=diff.hunks=, =diff.lines=, =history=, =commit=.
+
+* Searching commit messages and diffs
+
+This is the section to know.  Three different questions, three different
+tools — and they compose.
+
+** "Which commits SAY something?" — =where message=
+
+#+begin_example
+  $ gitq 'commits where message "registry" take 2'
+  eb62630d  claude                2026-07-09  test(gitq): port the grammar, fail-loud, and registry suites (243 checks)
+#+end_example
+
+In Emacs, =RET= on a result opens the commit in Magit
+(=magit-show-commit=) for the full message and diff.
+
+** "What does a file CONTAIN at some commit?" — =grep=
+
+#+begin_example
+  $ gitq 'HEAD grep "morphismRequires" take 3'
+  doc/gitq.org:67: - =morphismRequires= — the field its input shape must carry (its *domain*),
+  doc/gitq.org:160:   and codomain to =morphismRequires=/=morphismYields=, its surface form to
+  src/Gitq/Complete.hs:82:   Right (m : _) -> Just (morphismRequires (m :: Morphism))
+#+end_example
+
+=grep= searches the full blob content of every commit flowing into it and
+returns one frame per matching line.  Works on any commit set:
+=commits take 20 grep /TODO|FIXME/= greps twenty commits' trees (one frame
+per commit×line, so narrow the commit set first — it runs =git grep= once
+per commit).  Patterns: ="literal"= or =/regex/=.
+
+** "Which commits CHANGED something?" — =pickaxe=
+
+#+begin_example
+  $ gitq 'commits pickaxe "traverseParentsStar" /count'
+  1
+#+end_example
+
+=pickaxe= is git's =-S= (occurrence-count changed; add =regex= or use
+=/.../= for =-G=).  It keeps only the commits whose *diffs* added or
+removed the pattern — but by itself it can't show you the matching lines…
+
+** "Show me the matched diff lines" — =pickaxe= + =diff.lines=
+
+The flagship combination.  =diff.lines= turns each commit into its actual
+added/removed diff lines (text in =content=, ="+"/"-"= in =sign=), so after
+=pickaxe= narrows the commits, a =content= filter leaves exactly the lines
+that matched:
+
+#+begin_example
+  $ gitq 'commits pickaxe "traverseParentsStar" via diff.lines where content "traverseParentsStar" sort path'
+  0882d3e6  src/Gitq/Exec.hs:81: +  MParentStar    -> traverseParentsStar frames False
+  0882d3e6  src/Gitq/Exec.hs:82: +  MParentPlus    -> traverseParentsStar frames True
+  0882d3e6  src/Gitq/Exec.hs:164: +traverseParentsStar :: [Frame] -> Bool -> IO [Frame]
+  0882d3e6  src/Gitq/Exec.hs:165: +traverseParentsStar frames excludeStart = go frames S.empty []
+#+end_example
+
+(Since this very file now also mentions that identifier, a fresh run picks
+up the docs commit too — captured outputs are a point in time.)
+
+In the Emacs =*gitq*= buffer each line is rendered with =diff-added= /
+=diff-removed= faces, prefixed by the short commit hash; =RET= jumps to that
+commit's full diff in Magit for surrounding context.  Filter by direction
+with =sign= — =where content "...", sign == "+"= keeps only where the
+pattern was *introduced*, =sign == "-"= only where it was removed; omit the
+=content= filter to see a commit's whole diff as line frames.
+
+The =pickaxe= step is what keeps this fast: it prunes to the few relevant
+commits *before* =diff.lines= expands anything.  Running
+=commits via diff.lines ...= without narrowing first diffs every commit in
+the repo.
+
+** "Which FILES did matching commits change?" — =diff= + =pick=
+
+#+begin_example
+  $ gitq 'commits where message regex /^feat/ take 2 via diff pick path'
+  path:integrations/zsh/_gitq
+  path:integrations/emacs/gitq.el
+#+end_example
+
+=diff= yields one frame per changed path per commit; =pick= projects the
+fields you care about (projections render as raw key:value pairs).
+
+* The results buffer (Emacs)
+
+In Emacs, =/show= (or no terminal at all) opens =*gitq*= full-frame:
+
+| Key   | Action                                                        |
+|-------+---------------------------------------------------------------|
+| =RET= | Visit: commit → Magit diff view; blob → file at that revision |
+| =b=   | Create a branch at the commit at point                        |
+| =c=   | Copy the SHA at point                                         |
+| =q=   | Quit                                                          |
+
+Running =M-x gitq= again *from inside* a results buffer pre-fills the
+minibuffer with the pipeline that produced it — tweak and re-run.
+
+* Terminals in daily use
+
+#+begin_example
+  commits where message "tokenize" first /copy         ; SHA to the clipboard
+  commits pickaxe "some-function" first /worktree      ; detached worktree at that commit
+  commits where author "alice" first /branch-off "from-alice"
+  HEAD via parent* where message "fix" /count
+#+end_example
+
+=/worktree= places the worktree at =.worktree/<full-sha>/= unless you pass
+a quoted path.  =/delete= is an alias of =/remove=.  See the README for the
+CLI adaptations of each terminal.
+
+* When a query is wrong, it says so
+
+Nothing here returns a silent empty result — every mistake is a specific
+parse-time error:
+
+#+begin_example
+  $ gitq 'commits where date > 2026'
+  gitq: operator '>' does not apply to 'date' (a date field; try: ==, !=, after, before, within)
+
+  $ gitq 'commits where name == "main"'
+  gitq: field 'name' not valid here after 'where' (current frame has: sha, author, email, date, message, tree, parents-count)
+
+  $ gitq 'HEAD via tree.parent'
+  gitq: 'via tree.parent' needs a 'parents-count' field, but the current frame only has: sha
+
+  $ gitq 'commits where message take'
+  gitq: 'where message' requires a value; step keyword 'take' must be quoted: "take"
+#+end_example
+
+That last one matters when searching messages for words that are also gitq
+keywords (=take=, =first=, =sort=, ...): quote them —
+=commits where message "take"=.  There is no explicit =contains= keyword to
+separate field from value, so this quoting rule is what stands between
+"the where-clause ends here" and "the literal word take."
