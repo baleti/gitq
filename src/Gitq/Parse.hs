@@ -25,6 +25,7 @@ module Gitq.Parse
 
 import Data.Char (isDigit)
 import Data.List (intercalate, isPrefixOf)
+import qualified Text.Regex.TDFA.ReadRegex as RE
 import Gitq.AST
 import Gitq.Frame (Value (..))
 import Gitq.Registry
@@ -288,6 +289,14 @@ parseWhere tokens fields =
                                 ++ valTok ++ "' is not a number")
                      else do
                        op <- opFromName opTok
+                       -- a pattern that can't compile must fail here, not
+                       -- when the executor matches the first frame
+                       case (op, val) of
+                         (OpRegex, VStr pat)
+                           | Left err <- RE.parseRegex pat ->
+                               perr ("gitq: invalid regex '" ++ pat ++ "': "
+                                     ++ unwords (words (show err)))
+                         _ -> Right ()
                        Right (Cond fieldTok op val, drop 1 rest1)
               Nothing -> perr "gitq: internal error: unreachable where state"
       -- Implicit contains for eligible field types

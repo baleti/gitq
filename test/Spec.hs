@@ -203,6 +203,9 @@ failLoudTests ref = do
   perr ref "commits where author alice, take" "expected a field name after ','"
   perr ref "commits pick sha where author alice" "field 'author' not valid here after 'where'"
   perr ref "via parent" "expected step keyword"  -- 'via' parses as a ref source
+  -- a malformed pattern errors at parse time, not on the first frame matched
+  perr ref "commits where message regex /(/" "invalid regex '('"
+  perr ref "commits where message regex \"fix[\"" "invalid regex 'fix['"
 
 -- P1–P7 grammar disambiguation properties -------------------------------------
 
@@ -348,6 +351,17 @@ integrationTests ref = do
 
   fs6 <- frames "HEAD via parent+"
   check ref "parent+ exclusive = 2" (length fs6 == 2)
+
+  fs6b <- frames "HEAD via parent*"
+  check ref "parent* preserves discovery order (newest to oldest)"
+    (fieldStrs "message" fs6b == ["fix a needle-beta", "add b", "initial commit"])
+
+  fs6c <- frames "HEAD via parent[0]"
+  check ref "parent[0] batched lookup" (fieldStrs "message" fs6c == ["add b"])
+
+  fs6d <- frames "commits via parent"
+  check ref "via parent keeps duplicates and order"
+    (fieldStrs "message" fs6d == ["add b", "initial commit"])
 
   fs7 <- frames ("commits where sha " ++ take 8 rootSha)
   check ref "sha prefix contains-match" (shasOf fs7 == [rootSha])

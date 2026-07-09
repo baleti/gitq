@@ -18,7 +18,7 @@ import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Ord (comparing)
 import qualified Data.Set as S
 import Data.Time (UTCTime, defaultTimeLocale, diffUTCTime, getCurrentTime, parseTimeM)
-import Text.Regex.TDFA ((=~))
+import Text.Regex.TDFA (Regex, makeRegex, match, (=~))
 import Gitq.AST
 import Gitq.Frame
 import Gitq.Git
@@ -55,7 +55,11 @@ execStep :: [Frame] -> Step -> IO [Frame]
 execStep frames step = case step of
   StVia m         -> execVia frames m
   StWhere conds   -> do
-    results <- mapM (\f -> allConds f conds) frames
+    -- compile each condition once (a regex condition compiles its pattern
+    -- here, not per frame — matching 10k frames used to recompile the
+    -- regex 10k times)
+    let preds = map compileCond conds
+    results <- mapM (\f -> and <$> mapM ($ f) preds) frames
     pure [f | (f, ok) <- zip frames results, ok]
   StGrep pat re   -> execGrep frames pat re
   StPickaxe p re  -> execPickaxe frames p re
@@ -67,17 +71,33 @@ execStep frames step = case step of
   StLast          -> pure (case frames of [] -> []; fs -> [last fs])
   StSort field d  -> pure (execSort frames field d)
  where
-  allConds f = fmap and . mapM (evalCondition f)
   matchPath pat f = case frameField f "path" of
     Just (VStr p) -> pathMatches pat p
     _             -> False
+
+-- | One condition as a frame predicate, with per-condition work (regex
+-- compilation) hoisted out of the per-frame path.  The compiled regex is a
+-- lazy thunk captured by the closure: forced on the first frame, shared by
+-- the rest.  (The parser already validated the pattern, so forcing it
+-- cannot error.)
+compileCond :: Cond -> (Frame -> IO Bool)
+compileCond (Cond field OpRegex (VStr v)) =
+  let re = makeRegex v :: Regex
+  in \f -> pure $ case frameField f field of
+       Just (VStr a) -> match re a
+       _             -> False
+compileCond c = \f -> evalCondition f c
 
 -- Morphism executors -----------------------------------------------------
 
 execVia :: [Frame] -> Morphism -> IO [Frame]
 execVia frames m = case m of
-  MParent        -> concatMapM (\f -> catMaybesM (map fetchCommit (frameParents f))) frames
-  MParentIdx i   -> catMaybesM (map (fetchNthParent i) frames)
+  -- Parent/commit lookups are batched: collect the wanted SHAs first, fetch
+  -- them all in one git process ('fetchCommitMap'), then reassemble in the
+  -- original order (duplicates included, as the one-process-per-SHA version
+  -- produced them).
+  MParent        -> batchLookup (concatMap frameParents frames)
+  MParentIdx i   -> batchLookup [p | f <- frames, (p : _) <- [drop i (frameParents f)]]
   MParentStar    -> traverseParentsStar frames False
   MParentPlus    -> traverseParentsStar frames True
   MParentAdjoint -> viaParentAdjoint frames
@@ -86,16 +106,14 @@ execVia frames m = case m of
   MDiff ref      -> concatMapM (diffOf ref) frames
   MDiffHunks     -> concatMapM hunksOf frames
   MDiffLines     -> concatMapM diffLinesOf frames
-  MHistory       -> concatMapM historyOf frames
-  MCommit        -> catMaybesM (map commitOf frames)
+  MHistory       -> viaHistory frames
+  MCommit        -> batchLookup [s | f <- frames, Just s <- [strField f "commit-sha"]]
  where
   concatMapM f = fmap concat . mapM f
-  catMaybesM act = fmap (mapMaybe id) (sequence act)
 
-  fetchNthParent i f =
-    case drop i (frameParents f) of
-      (p : _) -> fetchCommit p
-      []      -> pure Nothing
+  batchLookup shas = do
+    cmap <- fetchCommitMap shas
+    pure [c | sha <- shas, Just c <- [M.lookup sha cmap]]
 
   treeOf f = case frameField f "tree" of
     Just (VStr t) -> Just (frame "tree" [("sha", VStr t)])
@@ -146,44 +164,60 @@ execVia frames m = case m of
       ls <- runGit args
       pure (parseDiffLines (unlines ls) sha)
 
-  historyOf f = case strField f "path" of
-    Nothing -> pure []
-    Just path -> do
+-- | History morphism: the commits that touched each frame's path.  One
+-- @git log --follow@ per path is inherent (--follow is single-path), but
+-- resolving the resulting SHAs to frames is one batched fetch for all
+-- paths together.
+viaHistory :: [Frame] -> IO [Frame]
+viaHistory frames = do
+  pathShas <- mapM shasOf frames
+  cmap <- fetchCommitMap (concatMap snd pathShas)
+  pure [ c { frameAttrs = M.insert "path" (VStr path) (frameAttrs c) }
+       | (path, shas) <- pathShas
+       , sha <- shas
+       , Just c <- [M.lookup sha cmap]
+       ]
+ where
+  shasOf f = case frameField f "path" of
+    Just (VStr path) -> do
       shas <- runGit ["log", "--follow", "--format=%H", "--", path]
-      commits <- catMaybesM (map fetchCommit shas)
-      pure [ c { frameAttrs = M.insert "path" (VStr path) (frameAttrs c) }
-           | c <- commits ]
-
-  commitOf f = case strField f "commit-sha" of
-    Just sha -> fetchCommit sha
-    Nothing  -> pure Nothing
+      pure (path, shas)
+    _ -> pure ("", [])
 
 -- | Walk parent links from the given frames, returning all reachable
 -- commits in discovery order.  When @excludeStart@ ('parent+'), the start
 -- frames themselves are excluded.
+--
+-- The reachable closure is materialized up front in two git processes
+-- (@rev-list --stdin@ for the SHA set, one batched log for their frames);
+-- the walk itself then replays the original one-process-per-commit
+-- algorithm purely in memory, preserving its discovery order exactly.
 traverseParentsStar :: [Frame] -> Bool -> IO [Frame]
-traverseParentsStar frames excludeStart = go frames S.empty []
+traverseParentsStar frames excludeStart = do
+  let startShas = [s | f <- frames, Just (VStr s) <- [frameField f "sha"]]
+  if null startShas
+    then pure []
+    else do
+      reachable <- runGitStdin ["rev-list", "--stdin"] (unlines startShas)
+      cmap <- fetchCommitMap reachable
+      pure (reverse (goStarts cmap startShas S.empty []))
  where
-  go [] _ acc = pure (reverse acc)
-  go (start : rest) visited acc = do
-    let startSha = case frameField start "sha" of
-          Just (VStr s) -> s
-          _             -> ""
-    (visited', acc') <- walk startSha [startSha] visited acc
-    go rest visited' acc'
-  walk _ [] visited acc = pure (visited, acc)
-  walk startSha (sha : queue) visited acc
-    | sha `S.member` visited = walk startSha queue visited acc
-    | otherwise = do
-        mc <- fetchCommit sha
+  goStarts _ [] _ acc = acc
+  goStarts cmap (start : rest) visited acc =
+    let (visited', acc') = walk cmap start [start] visited acc
+    in goStarts cmap rest visited' acc'
+  walk _ _ [] visited acc = (visited, acc)
+  walk cmap startSha (sha : queue) visited acc
+    | sha `S.member` visited = walk cmap startSha queue visited acc
+    | otherwise =
         let visited' = S.insert sha visited
-        case mc of
-          Nothing -> walk startSha queue visited' acc
-          Just c -> do
-            let acc' = if excludeStart && sha == startSha then acc else c : acc
-                unvisited = [p | p <- frameParents c, not (p `S.member` visited')]
-            -- parents are prepended (stack order), matching the original
-            walk startSha (reverse unvisited ++ queue) visited' acc'
+        in case M.lookup sha cmap of
+             Nothing -> walk cmap startSha queue visited' acc
+             Just c ->
+               let acc' = if excludeStart && sha == startSha then acc else c : acc
+                   unvisited = [p | p <- frameParents c, not (p `S.member` visited')]
+               -- parents are prepended (stack order), matching the original
+               in walk cmap startSha (reverse unvisited ++ queue) visited' acc'
 
 -- | Adjoint of parent: the commits whose parent is in the given frames.
 viaParentAdjoint :: [Frame] -> IO [Frame]
