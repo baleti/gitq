@@ -10,6 +10,7 @@ module Gitq.Git
   , fetchCommits
   , fetchCommit
   , fetchCommitMap
+  , parseCommitLine
   , fetchBranches
   , fetchTags
   , fetchRefs
@@ -19,12 +20,20 @@ module Gitq.Git
   , logFormat
   ) where
 
+import Control.Concurrent (forkIO)
 import Control.Exception (Exception, throwIO)
+import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TEE
 import Data.List (isInfixOf, stripPrefix, tails)
 import System.Exit (ExitCode (..))
-import System.Process (proc, readCreateProcessWithExitCode, waitForProcess, withCreateProcess)
+import System.IO (IOMode (WriteMode), hClose, hPutStr, openFile)
+import System.Process
+  ( CreateProcess (..), StdStream (..), createProcess, proc, waitForProcess
+  , withCreateProcess )
 import Gitq.AST (EntryFilter (..))
 import Gitq.Frame
 
@@ -47,10 +56,26 @@ runGit args = runGitStdin args ""
 -- | Like 'runGit', feeding the given input to git's stdin — used with
 -- @--stdin@ to pass arbitrarily many revisions in a single process,
 -- bypassing the argv length limit.
+--
+-- Output is read as bytes and decoded as UTF-8 /leniently/: real
+-- histories contain latin-1 commit metadata (git.git does), and the
+-- locale-strict decoding a plain readCreateProcess does throws
+-- @invalid argument@ on the first such byte.  Lenient decoding here also
+-- matches what the native backend does, so both produce the same frames.
 runGitStdin :: [String] -> String -> IO [String]
 runGitStdin args input = do
-  (_code, out, _err) <- readCreateProcessWithExitCode (proc "git" args) input
-  pure (filter (not . null) (lines out))
+  devNull <- openFile "/dev/null" WriteMode
+  (Just hin, Just hout, _, ph) <-
+    createProcess (proc "git" args)
+      { std_in = CreatePipe, std_out = CreatePipe, std_err = UseHandle devNull }
+  -- write stdin from a separate thread: a large --stdin batch could
+  -- otherwise deadlock against a filling stdout pipe
+  _ <- forkIO (hPutStr hin input >> hClose hin)
+  out <- BS.hGetContents hout
+  _ <- waitForProcess ph
+  hClose devNull
+  let text = TE.decodeUtf8With TEE.lenientDecode out
+  pure (filter (not . null) (lines (T.unpack text)))
 
 -- | Run git; return the first line of output, or Nothing.
 runGitString :: [String] -> IO (Maybe String)
