@@ -457,6 +457,19 @@ integrationTests ref = do
   fs28 <- frames "commits via diff.hunks"
   check ref "diff.hunks non-root commits have hunks" (not (null fs28))
 
+  fs28b <- frames "commits via diff.hunks where content needle-beta"
+  check ref "hunk content is filterable"
+    (length fs28b == 1
+       && case frameField (head fs28b) "content" of
+            Just (VStr c) -> "+needle-beta" `T.isInfixOf` c
+            _             -> False)
+  check ref "hunk carries owning commit's metadata"
+    (fieldStrs "author" fs28b == ["alice"]
+       && fieldStrs "message" fs28b == ["fix a needle-beta"])
+
+  fs28c <- frames "commits via diff.lines where content needle-beta sort date"
+  check ref "diff-line metadata allows sort date" (not (null fs28c))
+
   fs29 <- frames "commits where message regex /needle-(beta|gamma)/"
   check ref "regex operator matches" (length fs29 == 1)
 

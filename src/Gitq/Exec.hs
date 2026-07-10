@@ -164,7 +164,7 @@ execVia frames m = case m of
     Nothing -> pure []
     Just sha -> do
       ls <- runGit ["diff-tree", "-p", "--no-commit-id", "-r", T.unpack sha ++ "^", T.unpack sha]
-      pure (parseDiffHunks ls sha)
+      pure (parseDiffHunks ls sha (commitMeta f))
 
   diffLinesOf f = case strField f "sha" of
     Nothing -> pure []
@@ -174,7 +174,13 @@ execVia frames m = case m of
                    then ["diff-tree", "--root", "-p", "--no-commit-id", "-r", T.unpack sha]
                    else ["diff-tree", "-p", "--no-commit-id", "-r", T.unpack sha ++ "^", T.unpack sha]
       ls <- runGit args
-      pure (parseDiffLines ls sha)
+      pure (parseDiffLines ls sha (commitMeta f))
+
+  -- the owning commit's metadata rides along on its hunk/diff-line
+  -- frames, so they can be filtered, sorted, and displayed by author,
+  -- date, or subject without a lookup
+  commitMeta f =
+    [ (k, v) | k <- ["author", "date", "message"], Just v <- [frameField f k] ]
 
   strField f k = case frameField f k of
     Just (VStr s) -> Just s
@@ -263,31 +269,40 @@ viaParentAdjoint frames = do
 
 -- Diff parsing ------------------------------------------------------------
 
--- | Parse unified diff lines into hunk frames (line ranges only).
-parseDiffHunks :: [Text] -> Text -> [Frame]
-parseDiffHunks diffLines commitSha = go diffLines Nothing []
+-- | Parse unified diff lines into hunk frames: line ranges plus the
+-- hunk's full body text (context and ±lines, prefixes included) in
+-- @content@, so whole hunks can be content-filtered and displayed.
+-- EXTRA attrs (the owning commit's metadata) are attached to each frame.
+parseDiffHunks :: [Text] -> Text -> [(Text, Value)] -> [Frame]
+parseDiffHunks diffLines commitSha extra = go diffLines Nothing Nothing []
  where
-  go [] _ acc = reverse acc
-  go (l : rest) curPath acc
-    | Just p <- diffHeaderPath l = go rest (Just p) acc
+  go [] _ open acc = reverse (flush open acc)
+  go (l : rest) curPath open acc
+    | Just p <- diffHeaderPath l = go rest (Just p) Nothing (flush open acc)
     | Just path <- curPath
     , Just (start, count) <- hunkHeader l =
-        let hunk = frame "hunk"
-              [ ("path", VStr path)
-              , ("start-line", VNum start)
-              , ("end-line", VNum (start + max 0 (count - 1)))
-              , ("commit-sha", VStr commitSha)
-              ]
-        in go rest curPath (hunk : acc)
-    | otherwise = go rest curPath acc
+        go rest curPath (Just (path, start, count, [])) (flush open acc)
+    | Just (path, start, count, body) <- open =
+        go rest curPath (Just (path, start, count, l : body)) acc
+    | otherwise = go rest curPath open acc
+  flush Nothing acc = acc
+  flush (Just (path, start, count, body)) acc =
+    frame "hunk"
+      ([ ("path", VStr path)
+       , ("start-line", VNum start)
+       , ("end-line", VNum (start + max 0 (count - 1)))
+       , ("content", VStr (T.unlines (reverse body)))
+       , ("commit-sha", VStr commitSha)
+       ] ++ extra)
+    : acc
 
 -- | Parse unified diff lines into added/removed diff-line frames.
 -- line-number is the new-file line for additions and the old-file line for
 -- deletions.  The +++\/--- file headers can't be mistaken for changed
 -- lines because they appear before any @@ hunk header, when the line
 -- cursors are still unset.
-parseDiffLines :: [Text] -> Text -> [Frame]
-parseDiffLines diffLines commitSha = go diffLines Nothing Nothing []
+parseDiffLines :: [Text] -> Text -> [(Text, Value)] -> [Frame]
+parseDiffLines diffLines commitSha extra = go diffLines Nothing Nothing []
  where
   go [] _ _ acc = reverse acc
   go (l : rest) curPath cursors acc
@@ -309,10 +324,10 @@ parseDiffLines diffLines commitSha = go diffLines Nothing Nothing []
     | otherwise = go rest curPath cursors acc
   mkLine path sign n content =
     frame "diff-line"
-      [ ("path", VStr path), ("sign", VStr sign)
-      , ("line-number", VNum n), ("content", VStr content)
-      , ("commit-sha", VStr commitSha)
-      ]
+      ([ ("path", VStr path), ("sign", VStr sign)
+       , ("line-number", VNum n), ("content", VStr content)
+       , ("commit-sha", VStr commitSha)
+       ] ++ extra)
 
 -- | @diff --git a\/... b\/PATH@ → PATH (greedy: the last @ b/@ splits, as
 -- the original regex's greedy @.+@ did, so paths containing spaces work).
