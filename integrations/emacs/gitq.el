@@ -54,6 +54,15 @@ e.g. \"gitq-x86_64-linux\")."
 
 ;;; Running the CLI
 
+(defvar gitq--resolved-executable nil
+  "Absolute path of the auto-downloaded binary, when one is in use.
+Nil while `gitq-executable' resolves on `exec-path' — a binary the user
+installed themselves always wins over the auto-managed one.")
+
+(defun gitq--executable ()
+  "The gitq binary to invoke."
+  (or gitq--resolved-executable gitq-executable))
+
 (defun gitq--release-asset ()
   "Release asset name for this platform, or nil if none is published."
   (pcase (list system-type (car (split-string system-configuration "-")))
@@ -74,32 +83,38 @@ a published asset must build from source (make install-native)."
           (dest (expand-file-name "gitq" gitq-install-directory)))
       (make-directory gitq-install-directory t)
       (message "gitq: downloading %s ..." url)
-      (url-copy-file url dest t)
+      (condition-case err
+          (url-copy-file url dest t)
+        (error
+         (user-error "gitq: download from %s failed (%s) — build from source instead: make install-native"
+                     url (error-message-string err))))
       (set-file-modes dest #o755)
       (message "gitq: installed %s" dest)
       dest)))
 
 (defun gitq--ensure-executable ()
-  "Ensure the gitq binary is available, offering to download a release.
-Called up front by `gitq' so a missing binary is one actionable prompt,
-not a `file-missing' stack trace inside the completion UI on the first
-keystroke.  Accepting downloads via `gitq-install-binary'; if the
-install directory isn't on `exec-path', `gitq-executable' is pointed at
-the downloaded file directly."
-  (unless (executable-find gitq-executable)
-    (if (and (gitq--release-asset)
-             (y-or-n-p (format "gitq binary '%s' not found; download the prebuilt release binary to %s? "
-                               gitq-executable gitq-install-directory)))
-        (let ((dest (gitq-install-binary)))
-          (unless (executable-find gitq-executable)
-            (setq gitq-executable dest)))
-      (user-error "gitq: binary '%s' not found on `exec-path' — M-x gitq-install-binary, or build from source (cd ~/gitq && make install-native), or set `gitq-executable'"
-                  gitq-executable))))
+  "Ensure a gitq binary is available, fetching a release automatically.
+Resolution order: `gitq-executable' on `exec-path' (a user-installed
+binary always wins), then a previously downloaded binary in
+`gitq-install-directory', then a fresh automatic download of the
+prebuilt release asset — no interaction needed.  Only errors on
+platforms with no published asset and no binary."
+  (cond
+   ((executable-find gitq-executable)
+    (setq gitq--resolved-executable nil))
+   ((let ((local (expand-file-name "gitq" gitq-install-directory)))
+      (when (file-executable-p local)
+        (setq gitq--resolved-executable local))))
+   ((gitq--release-asset)
+    (setq gitq--resolved-executable (gitq-install-binary)))
+   (t
+    (user-error "gitq: binary '%s' not found on `exec-path' and no prebuilt release exists for %s/%s — build from source (make install-native in the gitq repo) or set `gitq-executable'"
+                gitq-executable system-type system-configuration))))
 
 (defun gitq--run (&rest args)
   "Run the gitq binary with ARGS; return (EXIT-CODE . OUTPUT)."
   (with-temp-buffer
-    (let ((code (apply #'call-process gitq-executable nil (list t nil) nil args)))
+    (let ((code (apply #'call-process (gitq--executable) nil (list t nil) nil args)))
       (cons code (buffer-string)))))
 
 (defun gitq--frames (pipeline)
