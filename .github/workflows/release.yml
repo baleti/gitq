@@ -1,0 +1,65 @@
+# Build the gitq binary (with the Rust/gix native backend) and attach it
+# to a GitHub Release whenever a v* tag is pushed.
+#
+# Built on ubuntu-22.04 deliberately: its glibc (2.35) is the portability
+# baseline, so the binary runs on Debian 12/13, Ubuntu 22.04+, and current
+# WSL images.  The Emacs integration's `gitq-install-binary` downloads the
+# bare `gitq-x86_64-linux` asset from the latest release.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: haskell-actions/setup@v2
+        id: haskell
+        with:
+          ghc-version: "9.6"
+          cabal-version: "latest"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.haskell.outputs.cabal-store }}
+          key: cabal-${{ runner.os }}-${{ hashFiles('gitq.cabal') }}
+          restore-keys: cabal-${{ runner.os }}-
+
+      - name: Configure git for the test suite's scratch repo
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.invalid
+          git config --global init.defaultBranch main
+
+      - name: Build and test (native backend)
+        run: |
+          cabal update
+          make test-native
+
+      - name: Package binary
+        run: |
+          BIN="$(cabal list-bin -fnative exe:gitq)"
+          strip "$BIN"
+          cp "$BIN" gitq-x86_64-linux
+          tar czf gitq-x86_64-linux.tar.gz gitq-x86_64-linux
+          ./gitq-x86_64-linux --help 2>&1 | head -2
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            gitq-x86_64-linux
+            gitq-x86_64-linux.tar.gz
+          generate_release_notes: true
