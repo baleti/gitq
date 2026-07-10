@@ -12,6 +12,15 @@ author:             baleti
 maintainer:         baleti
 build-type:         Custom
 extra-doc-files:    README.org
+-- the Rust backend's sources must ship in the sdist: `cabal install`
+-- builds from an unpacked sdist in a temp dir, and Setup.hs runs cargo
+-- inside it when the native flag is set
+extra-source-files:
+    Makefile
+    native/Cargo.lock
+    native/Cargo.toml
+    native/examples/*.rs
+    native/src/*.rs
 
 custom-setup
     setup-depends:

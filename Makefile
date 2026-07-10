@@ -16,11 +16,18 @@ test-native:
 	cd native && cargo build --release
 	cabal test -fnative
 
+# Install by copying the in-tree build (avoids cabal install's
+# build-from-sdist detour, which would rebuild the Rust crate in a temp
+# dir).  Override BINDIR for a different destination.
+BINDIR ?= $(HOME)/.local/bin
+
 install:
-	cabal install exe:gitq --overwrite-policy=always
+	cabal build exe:gitq
+	install -m 755 "$$(cabal list-bin exe:gitq)" $(BINDIR)/gitq
 
 install-native:
 	cd native && cargo build --release
-	cabal install -fnative exe:gitq --overwrite-policy=always
+	cabal build -fnative exe:gitq
+	install -m 755 "$$(cabal list-bin -fnative exe:gitq)" $(BINDIR)/gitq
 
 .PHONY: build native test test-native install install-native
