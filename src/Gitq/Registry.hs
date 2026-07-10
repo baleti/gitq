@@ -7,7 +7,7 @@ module Gitq.Registry
   , fieldType
   , operatorNames
   , operatorSignature
-  , implicitContainsTypes
+  , implicitOp
   , stepKeywords
   , commitFields, refFields, worktreeFields, blobFields
   , treeObjectFields, diffFields, hunkFields, lineFields, diffLineFields
@@ -87,10 +87,19 @@ operatorSignature op = lookup op table
     , ("is",     [TFlag])
     ]
 
--- | Field scalar types eligible for the implicit @contains@ fallback.
--- Date/number/flag fields get an unknown-operator error instead.
-implicitContainsTypes :: [FieldType]
-implicitContainsTypes = [TString, TSha]
+-- | The implicit operator applied when the token right after a field is a
+-- value rather than a recognized operator keyword: substring match for
+-- text-shaped fields (@where author bal@, @where date 2026-07@), equality
+-- for numbers (@where parents-count 2@ — substring over digits would make
+-- 2 match 12, a footgun).  Flag fields have no implicit operator: they
+-- are bare conditions (@where modified@), and an unrecognized token after
+-- one is still an unknown-operator parse error.
+implicitOp :: FieldType -> Maybe Op
+implicitOp TString = Just OpContains
+implicitOp TSha    = Just OpContains
+implicitOp TDate   = Just OpContains
+implicitOp TNumber = Just OpEq
+implicitOp TFlag   = Nothing
 
 -- | Reserved step keywords: these always start a new stage and must be
 -- quoted when used as string values.

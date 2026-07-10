@@ -300,10 +300,22 @@ parseWhere tokens fields =
                          _ -> Right ()
                        Right (Cond fieldTok op val, drop 1 rest1)
               Nothing -> perr "gitq: internal error: unreachable where state"
-      -- Implicit contains for eligible field types
-      Just valTok | ft `elem` implicitContainsTypes ->
-        Right (Cond fieldTok OpContains (parseWhereValue valTok), drop 1 rest)
-      -- date/number/flag field with an unrecognized operator token
+      -- Implicit operator: the token is the value directly (substring
+      -- match for text-shaped fields, equality for numbers)
+      Just valTok | Just iop <- implicitOp ft ->
+        let val = case (iop, parseWhereValue valTok) of
+              -- an all-digit token on a text-shaped field is a substring,
+              -- not a number: `where sha 95866` must match, not silently
+              -- compare a number against a string forever
+              (OpContains, VNum _) -> VStr (T.pack valTok)
+              (_, v)               -> v
+        in case (iop, val) of
+             (OpEq, VNum _) -> Right (Cond fieldTok iop val, drop 1 rest)
+             (OpEq, _) ->
+               perr ("gitq: '" ++ fieldTok ++ "' is a number field; '"
+                     ++ valTok ++ "' is not a number")
+             _ -> Right (Cond fieldTok iop val, drop 1 rest)
+      -- flag field with an unrecognized operator token
       Just opTok ->
         perr ("gitq: unknown where operator '" ++ opTok ++ "' (expected one of: "
               ++ intercalate ", " operatorNames ++ ")")

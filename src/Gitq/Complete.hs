@@ -51,7 +51,7 @@ completeCandidates input = do
       | Just fieldTok <- lastCtx
       , enclosingStep ctx == Just "where"
       , fieldTok `elem` currentTypeFields ctx -> do
-          vals <- if fieldType fieldTok `elem` implicitContainsTypes
+          vals <- if implicitOp (fieldType fieldTok) /= Nothing
                     then completeWhereValues fieldTok Nothing
                     else pure []
           pure (completeWhereOperators ++ vals)

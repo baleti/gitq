@@ -112,6 +112,18 @@ parserTests ref = do
   check ref "implicit contains bare word"
     (pipeSteps (p "commits where author alice")
        == [StWhere [Cond "author" OpContains (VStr "alice")]])
+  check ref "implicit contains on date"
+    (pipeSteps (p "commits where date 2026-07")
+       == [StWhere [Cond "date" OpContains (VStr "2026-07")]])
+  check ref "implicit equality on number"
+    (pipeSteps (p "commits where parents-count 2")
+       == [StWhere [Cond "parents-count" OpEq (VNum 2)]])
+  check ref "all-digit value on sha field stays a substring"
+    (pipeSteps (p "commits where sha 95866")
+       == [StWhere [Cond "sha" OpContains (VStr "95866")]])
+  check ref "all-digit value on date field stays a substring"
+    (pipeSteps (p "commits where date 2026")
+       == [StWhere [Cond "date" OpContains (VStr "2026")]])
   check ref "numeric comparison"
     (pipeSteps (p "commits where parents-count > 1")
        == [StWhere [Cond "parents-count" OpGt (VNum 1)]])
@@ -183,12 +195,18 @@ failLoudTests ref = do
   perr ref "commits sort name" "field 'name' not valid here after 'sort'"
   perr ref "commits where date > \"2020\"" "operator '>' does not apply to 'date'"
   perr ref "commits where parents-count == two" "'two' is not a number"
+  perr ref "commits where parents-count two" "'two' is not a number"
   perr ref "commits where author" "tests a flag, but 'author' is a string field"
   perr ref "commits where message take take 5" "step keyword 'take' must be quoted"
   perr ref "commits where message == take 5" "step keyword 'take' must be quoted"
   perr ref "commits where message ==" "operator '==' requires a value"
   perr ref "commits where date within" "operator 'within' requires a value"
-  perr ref "commits where date frob \"x\"" "unknown where operator 'frob'"
+  -- 'frob' is now an implicit-contains value on the date field; the
+  -- quoted leftover still makes the typo loud, one token later
+  perr ref "commits where date frob \"x\"" "expected step keyword or /terminal"
+  -- flag fields keep the unknown-operator error (no implicit fallback)
+  perr ref "commits via diff.hunks where commit-sha x, start-line frob \"x\"" "'start-line' is a number field"
+  perr ref "worktrees where detached frob" "unknown where operator 'frob'"
   perr ref "commits take 5x" "'take' requires a number, got '5x'"
   perr ref "commits take" "'take' requires a number, got end of input"
   perr ref "commits skip x" "'skip' requires a number"
@@ -376,6 +394,12 @@ integrationTests ref = do
 
   fs10 <- frames "commits where parents-count == 0"
   check ref "root has zero parents" (shasOf fs10 == [rootSha])
+
+  fs10b <- frames "commits where parents-count 0"
+  check ref "implicit number equality finds root" (shasOf fs10b == [rootSha])
+
+  fs10c <- frames "commits where date 2024-02"
+  check ref "implicit date substring" (fieldStrs "message" fs10c == ["add b"])
 
   fs11 <- frames "branches"
   check ref "branches has main" ("main" `elem` fieldStrs "name" fs11)
