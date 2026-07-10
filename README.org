@@ -47,7 +47,7 @@ thin integrations over it.
 ** Prebuilt binary (no toolchain needed)
 
 Every tagged release ships a Linux x86_64 binary (native gix backend
-included), built by [[file:.github/workflows/release.yml][the release workflow]]:
+included), built and tested by [[file:.github/workflows/release.yml][the release workflow]]:
 
 #+begin_src sh
   curl -L -o ~/.local/bin/gitq \
@@ -55,9 +55,12 @@ included), built by [[file:.github/workflows/release.yml][the release workflow]]
   chmod +x ~/.local/bin/gitq
 #+end_src
 
-The Emacs integration automates this: when =M-x gitq= can't find the
-binary, it offers to download it (=gitq-install-binary=; destination
-=gitq-install-directory=, default =~/.local/bin/=).
+The Emacs integration needs no manual step at all: on first use, if no
+=gitq= is found on =exec-path=, it downloads the release binary into
+the package's own directory automatically — so installing the straight
+recipe is the whole setup, and removing the recipe removes the binary
+with it.  A user-installed binary on PATH always takes precedence, and
+=M-x gitq-install-binary= forces a re-download.
 
 ** From source
 
