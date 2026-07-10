@@ -1,0 +1,42 @@
+# Run the test suite (native backend included) on every push and PR.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: haskell-actions/setup@v2
+        id: haskell
+        with:
+          ghc-version: "9.6"
+          cabal-version: "latest"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.haskell.outputs.cabal-store }}
+          key: cabal-${{ runner.os }}-${{ hashFiles('gitq.cabal') }}
+          restore-keys: cabal-${{ runner.os }}-
+
+      - name: Configure git for the test suite's scratch repo
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.invalid
+          git config --global init.defaultBranch main
+
+      - name: Test
+        run: |
+          cabal update
+          make test-native

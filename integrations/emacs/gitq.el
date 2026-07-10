@@ -42,16 +42,59 @@
   "Seconds of no further input change before gitq (re)previews results."
   :type 'number :group 'gitq)
 
+(defcustom gitq-release-url "https://github.com/baleti/gitq/releases/latest/download/"
+  "Base URL prebuilt gitq binaries are downloaded from.
+Assets are published by the repo's release workflow (one per platform,
+e.g. \"gitq-x86_64-linux\")."
+  :type 'string :group 'gitq)
+
+(defcustom gitq-install-directory (expand-file-name "~/.local/bin/")
+  "Directory `gitq-install-binary' downloads the gitq binary into."
+  :type 'directory :group 'gitq)
+
 ;;; Running the CLI
 
+(defun gitq--release-asset ()
+  "Release asset name for this platform, or nil if none is published."
+  (pcase (list system-type (car (split-string system-configuration "-")))
+    (`(gnu/linux "x86_64") "gitq-x86_64-linux")
+    (_ nil)))
+
+(defun gitq-install-binary ()
+  "Download the prebuilt gitq binary from the latest GitHub release.
+Installs into `gitq-install-directory' and returns the binary's path.
+The assets are built by the repo's release workflow; platforms without
+a published asset must build from source (make install-native)."
+  (interactive)
+  (let ((asset (gitq--release-asset)))
+    (unless asset
+      (user-error "gitq: no prebuilt binary for %s/%s — build from source: cd <gitq repo> && make install-native"
+                  system-type system-configuration))
+    (let ((url (concat gitq-release-url asset))
+          (dest (expand-file-name "gitq" gitq-install-directory)))
+      (make-directory gitq-install-directory t)
+      (message "gitq: downloading %s ..." url)
+      (url-copy-file url dest t)
+      (set-file-modes dest #o755)
+      (message "gitq: installed %s" dest)
+      dest)))
+
 (defun gitq--ensure-executable ()
-  "Signal a clear `user-error' if the gitq binary is not available.
-Called up front by `gitq' so a missing binary is one actionable message
-at the prompt, not a `file-missing' stack trace inside the completion
-UI on the first keystroke."
+  "Ensure the gitq binary is available, offering to download a release.
+Called up front by `gitq' so a missing binary is one actionable prompt,
+not a `file-missing' stack trace inside the completion UI on the first
+keystroke.  Accepting downloads via `gitq-install-binary'; if the
+install directory isn't on `exec-path', `gitq-executable' is pointed at
+the downloaded file directly."
   (unless (executable-find gitq-executable)
-    (user-error "gitq: binary '%s' not found on `exec-path' — install it (cd ~/gitq && make install-native, or cabal install exe:gitq) or set `gitq-executable'"
-                gitq-executable)))
+    (if (and (gitq--release-asset)
+             (y-or-n-p (format "gitq binary '%s' not found; download the prebuilt release binary to %s? "
+                               gitq-executable gitq-install-directory)))
+        (let ((dest (gitq-install-binary)))
+          (unless (executable-find gitq-executable)
+            (setq gitq-executable dest)))
+      (user-error "gitq: binary '%s' not found on `exec-path' — M-x gitq-install-binary, or build from source (cd ~/gitq && make install-native), or set `gitq-executable'"
+                  gitq-executable))))
 
 (defun gitq--run (&rest args)
   "Run the gitq binary with ARGS; return (EXIT-CODE . OUTPUT)."

@@ -44,15 +44,35 @@ thin integrations over it.
 
 * Installation
 
-Requires GHC ≥ 9.4 and cabal.
+** Prebuilt binary (no toolchain needed)
+
+Every tagged release ships a Linux x86_64 binary (native gix backend
+included), built by [[file:.github/workflows/release.yml][the release workflow]]:
+
+#+begin_src sh
+  curl -L -o ~/.local/bin/gitq \
+    https://github.com/baleti/gitq/releases/latest/download/gitq-x86_64-linux
+  chmod +x ~/.local/bin/gitq
+#+end_src
+
+The Emacs integration automates this: when =M-x gitq= can't find the
+binary, it offers to download it (=gitq-install-binary=; destination
+=gitq-install-directory=, default =~/.local/bin/=).
+
+** From source
+
+Requires GHC ≥ 9.4 and cabal; the native backend additionally needs a
+Rust toolchain.
 
 #+begin_src sh
   git clone https://github.com/baleti/gitq ~/gitq
   cd ~/gitq
-  cabal install exe:gitq    # installs to ~/.cabal/bin (put it on $PATH)
+  make install           # subprocess-git only, no Rust needed
+  make install-native    # with the in-process gix backend
 #+end_src
 
-Run the test suite with =cabal test=.
+Both install to =~/.local/bin= (override with =BINDIR=...=).  Run the
+test suite with =cabal test= (or =make test-native=).
 
 ** Optional: the Rust in-process git backend
 
