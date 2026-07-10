@@ -44,6 +44,15 @@
 
 ;;; Running the CLI
 
+(defun gitq--ensure-executable ()
+  "Signal a clear `user-error' if the gitq binary is not available.
+Called up front by `gitq' so a missing binary is one actionable message
+at the prompt, not a `file-missing' stack trace inside the completion
+UI on the first keystroke."
+  (unless (executable-find gitq-executable)
+    (user-error "gitq: binary '%s' not found on `exec-path' — install it (cd ~/gitq && make install-native, or cabal install exe:gitq) or set `gitq-executable'"
+                gitq-executable)))
+
 (defun gitq--run (&rest args)
   "Run the gitq binary with ARGS; return (EXIT-CODE . OUTPUT)."
   (with-temp-buffer
@@ -232,13 +241,18 @@ window is restored explicitly."
   "Return (CANDIDATE . DESCRIPTION) pairs for the pipeline string INPUT.
 Delegates to `gitq --complete-annotated', the same engine the strict
 parser is built on, so completion can never offer a token the parser
-rejects."
-  (pcase-let ((`(,code . ,out) (gitq--run "--complete-annotated" input)))
-    (when (zerop code)
-      (mapcar (lambda (line)
-                (pcase-let ((`(,cand ,desc) (split-string line "\t")))
-                  (cons cand (or desc ""))))
-              (split-string out "\n" t)))))
+rejects.  Never signals — completion runs on every keystroke inside the
+completion UI, so any failure (binary missing, not a repo) just means
+no candidates; `gitq--ensure-executable' reports the actionable error
+once, at the prompt."
+  (condition-case nil
+      (pcase-let ((`(,code . ,out) (gitq--run "--complete-annotated" input)))
+        (when (zerop code)
+          (mapcar (lambda (line)
+                    (pcase-let ((`(,cand ,desc) (split-string line "\t")))
+                      (cons cand (or desc ""))))
+                  (split-string out "\n" t))))
+    (error nil)))
 
 (defun gitq--current-token (string)
   "Return the in-progress partial token at the end of STRING, or \"\"."
@@ -371,9 +385,12 @@ See the gitq CLI's own documentation (doc/gitq.org) for the language;
 run \\`gitq --help' for CLI usage.  Invoked from a `gitq-results-mode'
 buffer, the minibuffer is pre-filled with the pipeline that produced it."
   (interactive
-   (list (gitq--read-pipeline "gitq> "
-                              (when (derived-mode-p 'gitq-results-mode)
-                                gitq--buffer-pipeline))))
+   (progn
+     (gitq--ensure-executable)
+     (list (gitq--read-pipeline "gitq> "
+                                (when (derived-mode-p 'gitq-results-mode)
+                                  gitq--buffer-pipeline)))))
+  (gitq--ensure-executable)
   (if (gitq--effectful-terminal-p pipeline)
       (pcase-let ((`(,code . ,out) (gitq--run pipeline)))
         (if (zerop code)
