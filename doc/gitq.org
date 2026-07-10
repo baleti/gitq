@@ -96,13 +96,16 @@ like everything else.
 
 =where= has no explicit =contains= keyword.  A value right after a field
 with no recognized operator between them (=operatorSignature=: =====,
-=!==, =>=, =<=, =>==, =<==, =regex=, =after=, =before=, =within=, =is=) is an
-implicit substring match, for field types where that's meaningful (string,
-sha) — =where author alice= means "author contains alice", not "equals",
-since bare equality would need =where author == alice= explicitly.
-Date/number/flag fields have no such fallback: an unrecognized token there
-is still an unknown-operator parse error, same as a genuinely bad operator
-keyword.
+=!==, =>=, =<=, =>==, =<==, =regex=, =after=, =before=, =within=, =is=) gets
+the field type's /implicit operator/ (=implicitOp=): a substring match for
+text-shaped fields — =where author bal=, =where sha 95866=, =where date
+2026-07= — and equality for numbers (=where parents-count 2=; substring
+over digits would make 2 match 12).  Bare equality on a text field needs
+=where author == alice= explicitly.  Flag fields have no fallback (they
+are bare conditions: =where modified=); an unrecognized token there is
+still an unknown-operator parse error.  An all-digit value on a
+text-shaped field stays a substring, not a number — =where sha 95866=
+matches SHA prefixes.
 
 ** Terminals
 

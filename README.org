@@ -24,9 +24,10 @@ Everything is validated at parse time against the frame shape actually
 flowing through the pipeline — unknown fields, operators that don't fit a
 field's type, or morphisms applied to the wrong object are immediate,
 specific errors, never silent empty results.  There is no explicit
-=contains= keyword: a value right after a field with no recognized operator
-between them is an implicit substring match (=where author alice=), for
-field types where that makes sense.
+=contains= keyword: a value right after a field with no recognized
+operator between them gets the field type's implicit operator — substring
+match for text-shaped fields (=where author bal=, =where date 2026-07=),
+equality for numbers (=where parents-count 2=).
 
 The full design — the typed categorical model, grammar, and extension
 guide — is in [[file:doc/gitq.org][doc/gitq.org]]; [[file:doc/examples.org][doc/examples.org]] is a set of worked examples
