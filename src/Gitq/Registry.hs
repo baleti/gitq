@@ -130,14 +130,18 @@ treeObjectFields = ["sha"]
 diffFields :: [String]
 diffFields = ["sha", "path", "parent-sha"]
 
+-- | Hunk frames carry the whole hunk body in @content@ and the owning
+-- commit's author\/date\/message; still no @sha@ of their own, so
+-- grep\/pickaxe cannot follow.
 hunkFields :: [String]
-hunkFields = ["path", "start-line", "end-line", "commit-sha"]
+hunkFields = ["path", "start-line", "end-line", "content", "commit-sha", "author", "date", "message"]
 
 lineFields :: [String]
 lineFields = ["sha", "path", "line-number", "content", "commit-sha"]
 
+-- | Diff-line frames also carry the owning commit's metadata.
 diffLineFields :: [String]
-diffLineFields = ["path", "line-number", "content", "sign", "commit-sha"]
+diffLineFields = ["path", "line-number", "content", "sign", "commit-sha", "author", "date", "message"]
 
 -- | The field-set each source's frames start the pipeline with.
 sourceFields :: Source -> [String]

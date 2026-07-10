@@ -56,7 +56,16 @@ renderFrameLine f = case frameType f of
   "line" -> T.concat
     [str f "path", ":", num f "line-number", ": ", orEmpty "content"]
   "hunk" -> T.concat
-    [str f "path", ":", num f "start-line", "-", num f "end-line"]
+    [ case frameField f "commit-sha" of
+        Just (VStr c) -> T.take 8 c <> "  "
+        _             -> ""
+    , str f "path", ":", num f "start-line", "-", num f "end-line"
+    , case (frameField f "author", frameField f "date") of
+        (Just (VStr a), Just (VStr d)) -> "  " <> a <> "  " <> T.take 10 d
+        _ -> ""
+    , case frameField f "content" of
+        Just (VStr c) | not (T.null c) -> "\n" <> T.stripEnd c
+        _ -> "" ]
   "diff-line" -> T.concat
     [ case frameField f "commit-sha" of
         Just (VStr c) -> T.take 8 c <> "  "

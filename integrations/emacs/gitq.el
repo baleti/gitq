@@ -3,7 +3,7 @@
 ;; Author: baleti
 ;; URL: https://github.com/baleti/gitq
 ;; Package-Requires: ((emacs "28.1"))
-;; Version: 0.2.0
+;; Version: 0.3.0
 
 ;;; Commentary:
 
@@ -41,6 +41,20 @@
 (defcustom gitq-preview-debounce 0.2
   "Seconds of no further input change before gitq (re)previews results."
   :type 'number :group 'gitq)
+
+(defcustom gitq-preview-max-results 300
+  "Maximum frames rendered in the live preview buffer.
+Short in-progress patterns (\"grep wo\") can match thousands of lines;
+the binary answers in well under 100ms, but redrawing a full frame of
+them on every debounced keystroke is what makes typing feel laggy.  The
+final run (RET) always renders everything."
+  :type 'natnum :group 'gitq)
+
+(defcustom gitq-match-face 'match
+  "Face used to highlight query matches in the results buffer.
+Defaults to the standard `match' face, the same one grep and occur
+buffers use."
+  :type 'face :group 'gitq)
 
 (defcustom gitq-release-url "https://github.com/baleti/gitq/releases/latest/download/"
   "Base URL prebuilt gitq binaries are downloaded from.
@@ -151,6 +165,71 @@ call `kill-all-local-variables', which would otherwise wipe it).")
   "Return MAGIT-FACE if it is defined, else FALLBACK."
   (if (facep magit-face) magit-face fallback))
 
+(defun gitq--highlight-regexps (pipeline)
+  "Extract regexps worth highlighting in results from PIPELINE.
+Covers the text the user is searching for: `grep'/`pickaxe' patterns
+and `where' values on the content and message fields.  Quoted and bare
+values are matched literally; /regex/ literals as regexps."
+  (let ((tokens nil) (start 0) res)
+    (while (string-match "\"[^\"]*\"\\|/[^/ ]*/\\|[^ \t]+" pipeline start)
+      (push (match-string 0 pipeline) tokens)
+      (setq start (match-end 0)))
+    (setq tokens (nreverse tokens))
+    (while tokens
+      (let ((tok (pop tokens)))
+        (cond
+         ((member tok '("grep" "pickaxe"))
+          (when tokens (push (gitq--term-to-regexp (pop tokens)) res)))
+         ((member tok '("content" "message"))
+          (let ((next (car tokens)))
+            (cond
+             ((member next '("==" "!=" "regex"))
+              (pop tokens)
+              (when tokens (push (gitq--term-to-regexp (pop tokens)) res)))
+             ((and next (not (member next '("via" "where" "grep" "pickaxe" "path" "pick"
+                                            "take" "skip" "first" "last" "sort" ","))))
+              (push (gitq--term-to-regexp (pop tokens)) res))))))))
+    (delete-dups (delq nil (nreverse res)))))
+
+(defun gitq--term-to-regexp (tok)
+  "Convert a pipeline value token to a highlight regexp, or nil."
+  (cond
+   ((null tok) nil)
+   ((string-match "\\`\"\\(.*\\)\"\\'" tok) (regexp-quote (match-string 1 tok)))
+   ((string-match "\\`/\\(.*\\)/\\'" tok) (match-string 1 tok))
+   (t (regexp-quote tok))))
+
+(defvar gitq--active-highlights nil
+  "Regexps highlighted while rendering the current results, or nil.")
+
+(defun gitq--apply-highlights (start end)
+  "Add `gitq-match-face' to matches of the active regexps in START..END."
+  (dolist (re gitq--active-highlights)
+    (save-excursion
+      (goto-char start)
+      (ignore-errors
+        (while (re-search-forward re end t)
+          (add-face-text-property (match-beginning 0) (match-end 0)
+                                  gitq-match-face))))))
+
+(defun gitq--insert-commit-header (frame)
+  "Insert a commit metadata header line for a hunk/diff-line FRAME."
+  (insert (propertize (substring (plist-get frame :commit-sha) 0 8)
+                      'face (gitq--face 'magit-hash 'shadow)))
+  (when-let ((author (plist-get frame :author)))
+    (insert "  ")
+    (insert (propertize author
+                        'face (gitq--face 'magit-log-author 'font-lock-string-face))))
+  (when-let ((date (plist-get frame :date)))
+    (insert "  ")
+    (insert (propertize (substring date 0 (min 10 (length date)))
+                        'face (gitq--face 'magit-log-date 'shadow))))
+  (when-let ((msg (plist-get frame :message)))
+    (insert "  ") (insert msg))
+  (put-text-property (line-beginning-position) (point)
+                     'gitq-sha (plist-get frame :commit-sha))
+  (insert "\n"))
+
 (defun gitq--frame-commit-sha (frame)
   "Return the commit SHA for FRAME (direct or via :commit-sha)."
   (or (plist-get frame :commit-sha)
@@ -206,16 +285,23 @@ call `kill-all-local-variables', which would otherwise wipe it).")
       ('hunk
        (insert (propertize (or (plist-get frame :path) "?")
                            'face (gitq--face 'magit-filename 'font-lock-function-name-face)))
-       (insert (format " lines %d-%d"
-                       (or (plist-get frame :start-line) 0)
-                       (or (plist-get frame :end-line) 0))))
+       (insert (propertize (format " lines %d-%d"
+                                   (or (plist-get frame :start-line) 0)
+                                   (or (plist-get frame :end-line) 0))
+                           'face 'shadow))
+       (when-let ((content (plist-get frame :content)))
+         (dolist (line (split-string (string-trim-right content "\n+") "\n"))
+           (insert "\n")
+           (insert (propertize line 'face
+                               (pcase (and (> (length line) 0) (aref line 0))
+                                 (?+ 'diff-added)
+                                 (?- 'diff-removed)
+                                 (_  'default)))))))
       ('diff-line
        (let* ((sign  (or (plist-get frame :sign) "?"))
               (added (equal sign "+")))
-         (when-let ((csha (plist-get frame :commit-sha)))
-           (insert (propertize (substring csha 0 (min 8 (length csha)))
-                               'face (gitq--face 'magit-hash 'shadow)))
-           (insert "  "))
+         ;; the grouped commit header carries the hash/author/date
+         (insert "  ")
          (insert (propertize (or (plist-get frame :path) "?")
                              'face (gitq--face 'magit-filename 'font-lock-function-name-face)))
          (insert ":")
@@ -232,16 +318,37 @@ call `kill-all-local-variables', which would otherwise wipe it).")
     (put-text-property start (point) 'gitq-sha (gitq--frame-commit-sha frame))
     (insert "\n")))
 
-(defun gitq--render (frames pipeline-str)
-  "Render FRAMES into the *gitq* results buffer and return that buffer."
+(defun gitq--render (frames pipeline-str &optional truncated)
+  "Render FRAMES into the *gitq* results buffer and return that buffer.
+Hunk and diff-line frames are grouped under commit metadata headers
+(their frames carry the owning commit's author/date/message).  Matches
+of the query's search terms are highlighted with `gitq-match-face'.
+TRUNCATED, if non-nil, is how many further results were omitted (used
+by the live preview)."
   (with-current-buffer (get-buffer-create "*gitq*")
-    (let ((inhibit-read-only t))
+    (let ((inhibit-read-only t)
+          (gitq--active-highlights (gitq--highlight-regexps pipeline-str))
+          (last-group-sha nil))
       (erase-buffer)
       (insert (propertize (format "gitq: %s\n\n" pipeline-str)
                           'face 'font-lock-comment-face))
       (if frames
-          (dolist (f frames) (gitq--insert-frame f))
+          (dolist (f frames)
+            ;; commit header when a hunk/diff-line group changes commit
+            (when (and (memq (plist-get f :type) '(hunk diff-line))
+                       (plist-get f :commit-sha)
+                       (not (equal (plist-get f :commit-sha) last-group-sha)))
+              (unless (bobp) (insert "\n"))
+              (gitq--insert-commit-header f)
+              (setq last-group-sha (plist-get f :commit-sha)))
+            (let ((start (point)))
+              (gitq--insert-frame f)
+              (gitq--apply-highlights start (point))))
         (insert "(no results)\n"))
+      (when (and truncated (> truncated 0))
+        (insert (propertize (format "\n... %d more results (RET on the query runs it in full)\n"
+                                    truncated)
+                            'face 'font-lock-comment-face)))
       (gitq-results-mode)
       (setq gitq--buffer-pipeline pipeline-str)
       (goto-char (point-min)))
