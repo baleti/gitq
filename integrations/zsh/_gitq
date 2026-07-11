@@ -1,11 +1,11 @@
 #compdef gitq
 # zsh completion for the gitq pipeline CLI tool.
 #
-# Install: copy or symlink this file into a directory on your $fpath, e.g.
-#   mkdir -p ~/.zsh/completions
-#   ln -s /path/to/gitq/integrations/zsh/_gitq ~/.zsh/completions/_gitq
-#   # then in ~/.zshrc, before compinit:
-#   fpath=(~/.zsh/completions $fpath)
+# Install: `make install-zsh` in the repo root (symlinks this file into
+# ${XDG_DATA_HOME:-~/.local/share}/zsh/completions), or copy/symlink it
+# into any directory on your $fpath yourself. Then in ~/.zshrc, before
+# compinit:
+#   fpath=(~/.local/share/zsh/completions $fpath)
 #   autoload -Uz compinit && compinit
 #
 # How it works:
