@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               gitq
-version:            0.3.0
+version:            0.4.0
 synopsis:           GitQ — a typed, categorical query language for git
 description:
   One query language over git's object graph: describe the data you want by

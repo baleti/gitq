@@ -10,7 +10,7 @@ import Gitq.Complete (completeCandidates)
 import Gitq.Exec (execPipeline)
 import Gitq.Git (GitqError (..), toplevel)
 import Gitq.Parse (parsePipeline)
-import Gitq.Registry (describeToken)
+import Gitq.Registry (describeToken, tokenKind)
 import Gitq.Render (putUtf8, renderFramesSexp, renderFramesText)
 import Gitq.Terminal (applyTerminal)
 
@@ -51,8 +51,9 @@ main = do
  where
   takeFlag f xs = (f `elem` xs, filter (/= f) xs)
   -- completion must never error mid-keystroke; just print what we can.
-  -- annotated mode prints "candidate\tdescription" so callers don't need
-  -- their own copy of the description registry.
+  -- annotated mode prints "candidate\tkind\tdescription" so callers need
+  -- neither their own description registry nor their own grammar
+  -- classification.
   complete annotated rest = do
     (do top <- toplevel
         setCurrentDirectory top
@@ -62,7 +63,9 @@ main = do
     exitSuccess
    where
     decorate c
-      | annotated = c ++ "\t" ++ maybe "" id (describeToken (dropDash c))
+      | annotated =
+          c ++ "\t" ++ maybe "" id (tokenKind c)
+            ++ "\t" ++ maybe "" id (describeToken (dropDash c))
       | otherwise = c
     dropDash ('-' : c@(_ : _)) = c
     dropDash c                 = c

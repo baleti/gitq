@@ -277,6 +277,10 @@ registryTests ref = do
   forM_ fieldNames $ \f -> do
     check ref ("field described: " ++ f)
       (describeToken f /= Nothing || f == "tree" || f == "path")
+  -- every completable token has a grammar kind
+  forM_ (completeSourceKeywords ++ stepKeywords ++ completeMorphisms
+          ++ fieldNames ++ completeWhereOperators ++ completeTerminals) $ \tok ->
+    check ref ("token has kind: " ++ tok) (tokenKind tok /= Nothing)
   -- operator completion list == signature table
   check ref "operator lists agree" (completeWhereOperators == operatorNames)
   forM_ operatorNames $ \op ->
