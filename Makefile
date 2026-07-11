@@ -30,4 +30,17 @@ install-native:
 	cabal build -fnative exe:gitq
 	install -m 755 "$$(cabal list-bin -fnative exe:gitq)" $(BINDIR)/gitq
 
-.PHONY: build native test test-native install install-native
+# Per-user zsh completion: symlink _gitq into a directory on your fpath.
+# Nothing system-wide; override ZSH_COMP_DIR to taste.
+ZSH_COMP_DIR ?= $(HOME)/.zsh/completions
+
+install-zsh:
+	mkdir -p $(ZSH_COMP_DIR)
+	ln -sf $(CURDIR)/integrations/zsh/_gitq $(ZSH_COMP_DIR)/_gitq
+	@echo "Linked _gitq into $(ZSH_COMP_DIR)."
+	@echo "Ensure ~/.zshrc has, BEFORE compinit:"
+	@echo "  fpath=($(ZSH_COMP_DIR) \$$fpath)"
+	@echo "  autoload -Uz compinit && compinit"
+	@echo "If completion doesn't appear, refresh the cache: rm -f ~/.zcompdump && compinit"
+
+.PHONY: build native test test-native install install-native install-zsh
