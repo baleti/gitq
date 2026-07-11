@@ -105,7 +105,7 @@ implicitOp TFlag   = Nothing
 -- | Reserved step keywords: these always start a new stage and must be
 -- quoted when used as string values.
 stepKeywords :: [String]
-stepKeywords = ["via", "where", "grep", "pickaxe", "path", "pick", "take", "skip", "first", "last", "sort"]
+stepKeywords = ["via", "where", "grep", "pickaxe", "path", "pick", "take", "skip", "first", "last", "sort", "context"]
 
 -- Structural field-set typing: the exact set of fields each frame shape
 -- carries, taken from where that shape is constructed in Gitq.Git/Gitq.Exec.
@@ -323,6 +323,7 @@ describeToken tok = lookup tok table
     , ("first",   "keep only the first result")
     , ("last",    "keep only the last result")
     , ("sort",    "sort by field (prefix with - for descending)")
+    , ("context", "trim content to N lines around matches (like grep -C)")
       -- morphisms
     , ("parent",             "first parent commit")
     , ("parent*",            "all reachable ancestors, inclusive")

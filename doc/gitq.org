@@ -94,6 +94,15 @@ and =pickaxe= search content and produce line frames / filter commits.
 These are the PRQL/SQL-flavored part of the language and are shape-checked
 like everything else.
 
+=context N [PATTERN]= is the grep =-C= analogue for content-carrying
+frames (hunks, above all): it trims each frame's =content= to blocks of
+lines within N lines of a pattern match, separating discontiguous blocks
+with a =···= marker.  Given no explicit PATTERN it centers on whatever
+the pipeline already searched for — =where content= values, =grep= and
+=pickaxe= patterns from earlier steps, resolved at parse time — and a
+=context= with nothing to center on is a parse error, not an empty
+result.
+
 =where= has no explicit =contains= keyword.  A value right after a field
 with no recognized operator between them (=operatorSignature=: =====,
 =!==, =>=, =<=, =>==, =<==, =regex=, =after=, =before=, =within=, =is=) gets

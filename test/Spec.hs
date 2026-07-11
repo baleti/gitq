@@ -163,6 +163,17 @@ parserTests ref = do
     (pipeSteps (p "commits pick sha author") == [StPick ["sha", "author"]])
   check ref "sort negation"
     (pipeSteps (p "commits sort -date") == [StSort "date" True])
+  check ref "context inherits content pattern"
+    (pipeSteps (p "commits via diff.hunks where content foo context 3")
+       == [StVia MDiffHunks, StWhere [Cond "content" OpContains (VStr "foo")],
+           StContext 3 [("foo", False)]])
+  check ref "context inherits grep pattern"
+    (pipeSteps (p "HEAD grep needle context 2")
+       == [StGrep "needle" False, StContext 2 [("needle", False)]])
+  check ref "context explicit pattern wins"
+    (pipeSteps (p "commits via diff.hunks where content foo context 1 \"bar\"")
+       == [StVia MDiffHunks, StWhere [Cond "content" OpContains (VStr "foo")],
+           StContext 1 [("bar", False)]])
   check ref "path both field and step"
     (pipeSteps (p "blobs path \"*.el\" where path contains-nothing" )
        == [StPath "*.el", StWhere [Cond "path" OpContains (VStr "contains-nothing")]])
@@ -215,6 +226,9 @@ failLoudTests ref = do
   perr ref "branches via tree" "'via tree' needs a 'tree' field"
   perr ref "commits via diff.hunks grep x" "'grep' needs a 'sha' field"
   perr ref "commits via diff.lines pickaxe x" "'pickaxe' needs a 'sha' field"
+  perr ref "commits via diff.hunks context 3" "no pattern to center on"
+  perr ref "commits context 3 x" "'context' needs a 'content' field"
+  perr ref "commits via diff.hunks where content x context y" "'context' requires a number"
   perr ref "branches via parent" "'via parent' needs a 'parents-count' field"
   perr ref "commits via frobnicate" "unknown morphism"
   perr ref "commits /frobnicate" "unknown terminal operation 'frobnicate'"
@@ -473,6 +487,12 @@ integrationTests ref = do
 
   fs28c <- frames "commits via diff.lines where content needle-beta sort date"
   check ref "diff-line metadata allows sort date" (not (null fs28c))
+
+  fs28d <- frames "commits via diff.hunks where content needle-beta context 0"
+  check ref "context 0 trims hunk to matching lines"
+    (case [c | fr <- fs28d, Just (VStr c) <- [frameField fr "content"]] of
+       [c] -> c == "+needle-beta\n"
+       _   -> False)
 
   fs29 <- frames "commits where message regex /needle-(beta|gamma)/"
   check ref "regex operator matches" (length fs29 == 1)
