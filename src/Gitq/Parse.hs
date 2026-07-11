@@ -9,6 +9,7 @@
 -- >              | "pickaxe" PATTERN ["regex"] | "path" GLOB
 -- >              | "pick" FIELD[,...] | "take" N | "skip" N
 -- >              | "first" | "last" | "sort" ["-"]FIELD
+-- >              | "context" N [PATTERN]
 -- >  terminal ::= "/show" | "/copy" | ... (the closed terminal registry)
 --
 -- Typing happens at parse time, in two layers: structural field-sets
@@ -54,7 +55,8 @@ parsePipeline input =
     tokens -> do
       (src, rest) <- parseSource tokens
       (steps, term) <- go rest (sourceFields src)
-      Right (Pipeline src steps term)
+      steps' <- resolveContexts steps
+      Right (Pipeline src steps' term)
  where
   trim = dropWhile (`elem` " \t\n\r")
        . reverse . dropWhile (`elem` " \t\n\r") . reverse
@@ -69,6 +71,33 @@ parsePipeline input =
         Right (steps ++ more, term)
     | otherwise =
         perr ("gitq: expected step keyword or /terminal, got '" ++ tok ++ "'")
+
+-- | Resolve a patternless @context N@ against the steps before it: it
+-- centers on whatever the pipeline already searched for — @where content@
+-- values, @grep@, and @pickaxe@ patterns.  Nothing to center on is a
+-- parse error, not an empty result.
+resolveContexts :: [Step] -> P [Step]
+resolveContexts steps = go' [] steps
+ where
+  go' _ [] = Right []
+  go' prior (StContext n [] : rest) =
+    case concatMap searchPatterns prior of
+      [] -> perr "gitq: 'context' has no pattern to center on — give one (context 3 \"term\") or precede it with a content filter, grep, or pickaxe"
+      pats -> (StContext n pats :) <$> go' (prior ++ [StContext n pats]) rest
+  go' prior (st : rest) = (st :) <$> go' (prior ++ [st]) rest
+  searchPatterns st = case st of
+    StWhere conds ->
+      [ (T.unpack v, isRe)
+      | Cond "content" op (VStr v) <- conds
+      , Just isRe <- [case op of
+                        OpContains -> Just False
+                        OpRegex    -> Just True
+                        OpEq       -> Just False
+                        _          -> Nothing]
+      ]
+    StGrep p re    -> [(p, re)]
+    StPickaxe p re -> [(p, re)]
+    _              -> []
 
 -- | Parse the source (first stage), returning it and the remaining tokens.
 parseSource :: [String] -> P (Source, [String])
@@ -149,6 +178,15 @@ parseStep (kw : tokens) fields = case kw of
     Right ([StSkip n], rest, fields)
   "first" -> Right ([StFirst], tokens, fields)
   "last"  -> Right ([StLast], tokens, fields)
+  "context" -> do
+    requireField fields "content" "context"
+    (n, rest0) <- parseCount tokens "context"
+    case rest0 of
+      (t : rest) | not (isBoundary (Just t)) ->
+        let isRe = "/" `isPrefixOf` t
+            pat  = if isRe then unregex t else unquote t
+        in Right ([StContext n [(pat, isRe)]], rest, fields)
+      _ -> Right ([StContext n []], rest0, fields)
   "sort" -> case tokens of
     [] -> perr "gitq: 'sort' requires a field name"
     (f : rest) ->

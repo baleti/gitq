@@ -3,7 +3,7 @@
 ;; Author: baleti
 ;; URL: https://github.com/baleti/gitq
 ;; Package-Requires: ((emacs "28.1"))
-;; Version: 0.4.0
+;; Version: 0.5.0
 
 ;;; Commentary:
 
@@ -149,13 +149,20 @@ with the CLI's message on failure."
     (define-key m (kbd "c")   #'gitq-results-copy-sha)
     (define-key m (kbd "q")   #'quit-window)
     (define-key m (kbd "C-o") #'gitq-results-focus-query)
+    ;; org-style folding: TAB toggles the hunk at point, S-TAB the buffer.
+    ;; f/F as fallbacks for setups where evil owns TAB in normal state.
+    (define-key m (kbd "TAB")       #'gitq-results-toggle-fold)
+    (define-key m (kbd "<backtab>") #'gitq-results-toggle-fold-all)
+    (define-key m (kbd "f")         #'gitq-results-toggle-fold)
+    (define-key m (kbd "F")         #'gitq-results-toggle-fold-all)
     m)
   "Keymap for `gitq-results-mode'.")
 
 (define-derived-mode gitq-results-mode special-mode "GitQ"
   "Major mode for displaying gitq pipeline results."
   :interactive nil
-  (setq truncate-lines t))
+  (setq truncate-lines t)
+  (add-to-invisibility-spec '(gitq-fold . t)))
 
 (defvar-local gitq--buffer-pipeline nil
   "The pipeline string that produced this `gitq-results-mode' buffer.
@@ -290,14 +297,21 @@ values are matched literally; /regex/ literals as regexps."
                                    (or (plist-get frame :start-line) 0)
                                    (or (plist-get frame :end-line) 0))
                            'face 'shadow))
-       (when-let ((content (plist-get frame :content)))
-         (dolist (line (split-string (string-trim-right content "\n+") "\n"))
-           (insert "\n")
-           (insert (propertize line 'face
-                               (pcase (and (> (length line) 0) (aref line 0))
-                                 (?+ 'diff-added)
-                                 (?- 'diff-removed)
-                                 (_  'default)))))))
+       (let ((body-start (point)))
+         (when-let ((content (plist-get frame :content)))
+           (dolist (line (split-string (string-trim-right content "\n+") "\n"))
+             (insert "\n")
+             (insert (propertize line 'face
+                                 (pcase (and (> (length line) 0) (aref line 0))
+                                   (?+ 'diff-added)
+                                   (?- 'diff-removed)
+                                   (_  'default))))))
+         ;; foldable body: TAB anywhere on the hunk toggles it (the
+         ;; property spans the whole hunk so point can be on any line)
+         (when (> (point) body-start)
+           (put-text-property start (point) 'gitq-fold-body
+                              (cons (copy-marker body-start)
+                                    (copy-marker (point)))))))
       ('diff-line
        (let* ((sign  (or (plist-get frame :sign) "?"))
               (added (equal sign "+")))
@@ -398,6 +412,51 @@ window is restored explicitly."
   (if-let ((mb (active-minibuffer-window)))
       (select-window mb)
     (call-interactively #'gitq)))
+
+(defun gitq--fold-overlay-at (beg end)
+  "The fold overlay covering BEG..END, if any."
+  (seq-find (lambda (ov) (overlay-get ov 'gitq-fold))
+            (overlays-in beg end)))
+
+(defun gitq-results-toggle-fold ()
+  "Fold or unfold the hunk body at point (header line stays visible)."
+  (interactive nil gitq-results-mode)
+  (let ((region (or (get-text-property (point) 'gitq-fold-body)
+                    (get-text-property (line-beginning-position) 'gitq-fold-body))))
+    (unless region
+      (user-error "No foldable hunk at point"))
+    (let* ((beg (marker-position (car region)))
+           (end (marker-position (cdr region)))
+           (existing (gitq--fold-overlay-at beg end)))
+      (if existing
+          (delete-overlay existing)
+        (let ((ov (make-overlay beg end)))
+          (overlay-put ov 'gitq-fold t)
+          (overlay-put ov 'invisible 'gitq-fold)
+          (overlay-put ov 'isearch-open-invisible #'delete-overlay))))))
+
+(defun gitq--all-fold-regions ()
+  "All distinct hunk body regions in the buffer, as (BEG . END)."
+  (let (regions (pos (point-min)) region)
+    (while (setq pos (next-single-property-change pos 'gitq-fold-body))
+      (when (setq region (get-text-property pos 'gitq-fold-body))
+        (cl-pushnew (cons (marker-position (car region))
+                          (marker-position (cdr region)))
+                    regions :test #'equal)))
+    (nreverse regions)))
+
+(defun gitq-results-toggle-fold-all ()
+  "Fold every hunk body in the buffer, or unfold them all if any are folded."
+  (interactive nil gitq-results-mode)
+  (let ((folded (seq-filter (lambda (ov) (overlay-get ov 'gitq-fold))
+                            (overlays-in (point-min) (point-max)))))
+    (if folded
+        (mapc #'delete-overlay folded)
+      (dolist (region (gitq--all-fold-regions))
+        (let ((ov (make-overlay (car region) (cdr region))))
+          (overlay-put ov 'gitq-fold t)
+          (overlay-put ov 'invisible 'gitq-fold)
+          (overlay-put ov 'isearch-open-invisible #'delete-overlay))))))
 
 (defun gitq-results-copy-sha ()
   "Copy the SHA at point to the kill ring."

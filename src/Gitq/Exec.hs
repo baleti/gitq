@@ -81,6 +81,7 @@ execStep frames step = case step of
   StFirst         -> pure (take 1 frames)
   StLast          -> pure (case frames of [] -> []; fs -> [last fs])
   StSort field d  -> pure (execSort frames field d)
+  StContext n pats -> pure (map (trimContext n pats) frames)
  where
   matchPath pat f = case frameField f "path" of
     Just (VStr p) -> pathMatches pat p
@@ -481,6 +482,37 @@ execPickaxe frames pat regex = do
       let hitSet = S.fromList hits
       pure [ f | f <- frames
            , Just (VStr s) <- [frameField f "sha"], s `S.member` hitSet ]
+
+-- | Trim a frame's @content@ to blocks of lines within N lines of a
+-- pattern match, discontiguous blocks separated by a marker line — the
+-- gitq analogue of grep -C.  Matchers compile once per step, not per
+-- frame; frames without content (or whose content has no match) keep an
+-- empty content rather than disappearing.
+trimContext :: Int -> [(String, Bool)] -> Frame -> Frame
+trimContext n pats = \f ->
+  case frameField f "content" of
+    Just (VStr c) ->
+      f { frameAttrs = M.insert "content" (VStr (trim c)) (frameAttrs f) }
+    _ -> f
+ where
+  matchers =
+    [ if isRe
+        then let re = makeRegex p :: Regex in \l -> matchTest re l
+        else let pt = T.pack p in \l -> pt `T.isInfixOf` l
+    | (p, isRe) <- pats ]
+  trim c =
+    let ls = T.lines c
+        hits = [i | (i, l) <- zip [0 :: Int ..] ls, any ($ l) matchers]
+        keep i = any (\h -> abs (i - h) <= n) hits
+        blocks = groupRuns [(i, l) | (i, l) <- zip [0 ..] ls, keep i]
+    in T.intercalate "\183\183\183\n" (map (T.unlines . map snd) blocks)
+  groupRuns [] = []
+  groupRuns (x : xs) = go' [x] xs
+   where
+    go' acc ((i, l) : rest)
+      | i == fst (head acc) + 1 = go' ((i, l) : acc) rest
+      | otherwise = reverse acc : go' [(i, l)] rest
+    go' acc [] = [reverse acc]
 
 -- | Project each frame to only the listed fields.
 project :: [Text] -> Frame -> Frame

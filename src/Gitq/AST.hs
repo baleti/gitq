@@ -61,6 +61,11 @@ data Step
   | StFirst
   | StLast
   | StSort String Bool              -- ^ field, descending?
+  | StContext Int [(String, Bool)]  -- ^ keep N lines around pattern matches
+                                    --   in @content@; patterns (with
+                                    --   regex flags) are baked in at parse
+                                    --   time — explicit, or inherited from
+                                    --   preceding content searches
   deriving (Eq, Show)
 
 data Cond = Cond
