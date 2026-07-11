@@ -132,22 +132,30 @@ The =gitq= binary must be on =exec-path= (or set =gitq-executable=).
 * Zsh completion
 
 Entirely per-user — completions live in any directory on your =$fpath=,
-no root or system paths involved.  The default destination follows XDG
-(=$XDG_DATA_HOME/zsh/completions=, i.e. =~/.local/share/zsh/completions=
-— completion functions are data, mirroring the system-wide
-=site-functions= convention, so no new dotfile directory in =$HOME=):
+no root or system paths involved:
 
 #+begin_src sh
   cd ~/gitq && make install-zsh
-  # then in ~/.zshrc, BEFORE compinit:
-  #   fpath=(~/.local/share/zsh/completions $fpath)
-  #   autoload -Uz compinit && compinit
 #+end_src
 
-(Override with =make install-zsh ZSH_COMP_DIR=...= — e.g.
-=$ZDOTDIR/completions= if you keep your zsh config under =~/.config/zsh=;
-if completion doesn't appear, the cache is stale: =rm -f ~/.zcompdump &&
-compinit=.)
+If your shell already has a writable =$HOME= directory on =$fpath=
+(oh-my-zsh, zinit, antidote, and friends all add one), the link goes
+there and *no zshrc changes are needed* — just refresh the completion
+cache (=rm -f ~/.zcompdump && exec zsh=).  Stock zsh has no per-user
+fpath directory, so in that case the link goes to the XDG data dir
+(=~/.local/share/zsh/completions= — completion functions are data,
+mirroring the system =site-functions= convention, no new dotfile
+directory in =$HOME=) and the installer prints the two required
+=~/.zshrc= lines:
+
+#+begin_src sh
+  fpath=(~/.local/share/zsh/completions $fpath)
+  autoload -Uz compinit && compinit
+#+end_src
+
+Override the destination with =make install-zsh ZSH_COMP_DIR=...= —
+e.g. =$ZDOTDIR/completions= if you keep zsh config under
+=~/.config/zsh=.
 
 Completion inside the pipeline argument delegates to =gitq --complete=, so
 zsh, Emacs, and the parser always agree on what is valid where.
