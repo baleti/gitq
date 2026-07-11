@@ -3,7 +3,7 @@
 ;; Author: baleti
 ;; URL: https://github.com/baleti/gitq
 ;; Package-Requires: ((emacs "28.1"))
-;; Version: 0.5.0
+;; Version: 0.5.1
 
 ;;; Commentary:
 
@@ -148,7 +148,6 @@ with the CLI's message on failure."
     (define-key m (kbd "b")   #'gitq-results-branch-off)
     (define-key m (kbd "c")   #'gitq-results-copy-sha)
     (define-key m (kbd "q")   #'quit-window)
-    (define-key m (kbd "C-o") #'gitq-results-focus-query)
     ;; org-style folding: TAB toggles the hunk at point, S-TAB the buffer.
     ;; f/F as fallbacks for setups where evil owns TAB in normal state.
     (define-key m (kbd "TAB")       #'gitq-results-toggle-fold)
@@ -373,14 +372,16 @@ by the live preview)."
   "Show FRAMES in the *gitq* buffer, taking over the whole frame."
   (pop-to-buffer (gitq--render frames pipeline-str) '(display-buffer-full-frame)))
 
-(defun gitq--preview-display (frames pipeline-str)
+(defun gitq--preview-display (frames pipeline-str &optional truncated)
   "Show FRAMES in the *gitq* buffer without selecting its window.
 `display-buffer-full-frame' works via `delete-other-windows', which
 selects its target window as a side effect — during a minibuffer read
 that silently steals focus from typing, so the previously selected
-window is restored explicitly."
+window is restored explicitly.  TRUNCATED is passed to `gitq--render'
+(the count of preview results omitted beyond `gitq-preview-max-results')."
   (let ((previously-selected (selected-window)))
-    (display-buffer (gitq--render frames pipeline-str) '(display-buffer-full-frame))
+    (display-buffer (gitq--render frames pipeline-str truncated)
+                    '(display-buffer-full-frame))
     (when (window-live-p previously-selected)
       (select-window previously-selected))))
 
@@ -405,13 +406,6 @@ window is restored explicitly."
       (call-process "git" nil nil nil "checkout" "-b" name sha)
       (when (fboundp 'magit-refresh) (magit-refresh))
       (message "gitq: created branch '%s'" name))))
-
-(defun gitq-results-focus-query ()
-  "Jump back to the gitq minibuffer if one is open, else start `gitq'."
-  (interactive nil gitq-results-mode)
-  (if-let ((mb (active-minibuffer-window)))
-      (select-window mb)
-    (call-interactively #'gitq)))
 
 (defun gitq--fold-overlay-at (beg end)
   "The fold overlay covering BEG..END, if any."
@@ -604,6 +598,43 @@ Feeds the location annotations and the repo-scoping toggle in
     map)
   "Extra keys inside the history search: \\`M-.' toggles repo scoping.")
 
+(defun gitq--minibuffer-selection ()
+  "The candidate currently highlighted in this minibuffer.
+Vertico's selection when Vertico is active (so moving through the list
+previews each entry), otherwise the literal minibuffer contents."
+  (if (and (bound-and-true-p vertico--input) (fboundp 'vertico--candidate))
+      (vertico--candidate)
+    (minibuffer-contents-no-properties)))
+
+(defun gitq--attach-preview (get-input)
+  "Attach the debounced live results preview to the current minibuffer.
+GET-INPUT is called (in the minibuffer) to obtain the pipeline string
+to preview.  Used by both the gitq prompt (previewing what's typed) and
+the history search (previewing the highlighted entry)."
+  (let ((mb-buffer (current-buffer))
+        (last-input nil)
+        (timer nil))
+    (add-hook 'post-command-hook
+              (lambda ()
+                (when timer (cancel-timer timer))
+                (setq timer
+                      (run-with-timer
+                       gitq-preview-debounce nil
+                       (lambda ()
+                         (when (buffer-live-p mb-buffer)
+                           (with-current-buffer mb-buffer
+                             (let ((input (funcall get-input)))
+                               (unless (equal input last-input)
+                                 (setq last-input input)
+                                 (pcase (gitq--preview-frames input)
+                                   (`(:ok . ,frames)
+                                    (let ((total (length frames)))
+                                      (gitq--preview-display
+                                       (seq-take frames gitq-preview-max-results)
+                                       input
+                                       (max 0 (- total gitq-preview-max-results))))))))))))))
+              nil t)))
+
 (defun gitq--history-search ()
   "Pick a previous pipeline and run it immediately.
 Selecting an entry replaces the minibuffer contents and submits it, so
@@ -631,7 +662,8 @@ run from the current repo (each entry is annotated with its repo)."
                        (minibuffer-with-setup-hook
                            (lambda ()
                              (use-local-map (make-composed-keymap
-                                             gitq--history-map (current-local-map))))
+                                             gitq--history-map (current-local-map)))
+                             (gitq--attach-preview #'gitq--minibuffer-selection))
                          (completing-read
                           (format "gitq history%s (M-. → %s): "
                                   (if scoped (format " [%s]" here) "")
@@ -644,22 +676,15 @@ run from the current repo (each entry is annotated with its repo)."
     ;; submit the outer gitq prompt: run the query for real
     (exit-minibuffer)))
 
-(defun gitq-focus-results ()
-  "Select the *gitq* results window, leaving the minibuffer open.
-Useful when results are longer than the screen: inspect and scroll them
-(\\`C-o' there comes back; \\`C-M-v' scrolls them without leaving the
-minibuffer at all)."
-  (interactive)
-  (if-let ((win (get-buffer-window "*gitq*")))
-      (select-window win)
-    (user-error "No *gitq* results window")))
-
 (defvar gitq--pipeline-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-r") #'gitq--history-search)
-    (define-key map (kbd "C-o") #'gitq-focus-results)
     map)
-  "Keymap merged into the minibuffer's local map by `gitq--read-pipeline'.")
+  "Keymap merged into the minibuffer's local map by `gitq--read-pipeline'.
+Window switching into the results buffer is deliberately not bound
+here: rebind your usual window keys for minibuffers instead, e.g.
+  (map! :map (minibuffer-local-map vertico-map) \"C-w\" evil-window-map)
+\\`C-M-v' scrolls the results window without leaving the minibuffer.")
 
 (defun gitq--preview-frames (input)
   "Return (:ok . FRAMES) if INPUT previews cleanly, else nil.
@@ -673,30 +698,12 @@ INPUT does not currently parse or execute cleanly."
   "Read a gitq pipeline with completion and a debounced live preview.
 INITIAL-INPUT, if non-nil, pre-fills the minibuffer.  \\`C-r' opens a
 history search over previously-run pipelines."
-  (let ((mb-buffer  nil)
-        (last-input nil)
-        (timer      nil))
-    (cl-labels
-        ((tick ()
-           (when (buffer-live-p mb-buffer)
-             (with-current-buffer mb-buffer
-               (let ((input (minibuffer-contents-no-properties)))
-                 (unless (equal input last-input)
-                   (setq last-input input)
-                   (pcase (gitq--preview-frames input)
-                     (`(:ok . ,frames) (gitq--preview-display frames input))))))))
-         (schedule ()
-           (when timer (cancel-timer timer))
-           (setq timer (run-with-timer gitq-preview-debounce nil #'tick)))
-         (setup ()
-           (setq mb-buffer (current-buffer))
-           (use-local-map (make-composed-keymap gitq--pipeline-map (current-local-map)))
-           (add-hook 'post-command-hook #'schedule nil t)))
-      (unwind-protect
-          (minibuffer-with-setup-hook #'setup
-            (completing-read prompt #'gitq--completion-table nil nil
-                             initial-input 'gitq--history))
-        (when timer (cancel-timer timer))))))
+  (minibuffer-with-setup-hook
+      (lambda ()
+        (use-local-map (make-composed-keymap gitq--pipeline-map (current-local-map)))
+        (gitq--attach-preview #'minibuffer-contents-no-properties))
+    (completing-read prompt #'gitq--completion-table nil nil
+                     initial-input 'gitq--history)))
 
 ;;; Entry point
 
