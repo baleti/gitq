@@ -3,7 +3,7 @@
 ;; Author: baleti
 ;; URL: https://github.com/baleti/gitq
 ;; Package-Requires: ((emacs "28.1"))
-;; Version: 0.3.0
+;; Version: 0.4.0
 
 ;;; Commentary:
 
@@ -148,6 +148,7 @@ with the CLI's message on failure."
     (define-key m (kbd "b")   #'gitq-results-branch-off)
     (define-key m (kbd "c")   #'gitq-results-copy-sha)
     (define-key m (kbd "q")   #'quit-window)
+    (define-key m (kbd "C-o") #'gitq-results-focus-query)
     m)
   "Keymap for `gitq-results-mode'.")
 
@@ -391,6 +392,13 @@ window is restored explicitly."
       (when (fboundp 'magit-refresh) (magit-refresh))
       (message "gitq: created branch '%s'" name))))
 
+(defun gitq-results-focus-query ()
+  "Jump back to the gitq minibuffer if one is open, else start `gitq'."
+  (interactive nil gitq-results-mode)
+  (if-let ((mb (active-minibuffer-window)))
+      (select-window mb)
+    (call-interactively #'gitq)))
+
 (defun gitq-results-copy-sha ()
   "Copy the SHA at point to the kill ring."
   (interactive nil gitq-results-mode)
@@ -414,8 +422,8 @@ once, at the prompt."
       (pcase-let ((`(,code . ,out) (gitq--run "--complete-annotated" input)))
         (when (zerop code)
           (mapcar (lambda (line)
-                    (pcase-let ((`(,cand ,desc) (split-string line "\t")))
-                      (cons cand (or desc ""))))
+                    (pcase-let ((`(,cand ,kind ,desc) (split-string line "\t")))
+                      (list cand (or kind "") (or desc ""))))
                   (split-string out "\n" t))))
     (error nil)))
 
@@ -436,16 +444,49 @@ once, at the prompt."
   (cdr gitq--completion-cache))
 
 (defun gitq--affixate (candidates)
-  "Return CANDIDATES as (CAND \"\" DESC) triples for completion UIs."
+  "Return CANDIDATES as (CAND \"\" DESC) triples for completion UIs.
+The plain fallback used when Marginalia isn't around (see
+`gitq--marginalia-annotate' for the Marginalia version)."
   (let ((table (cdr gitq--completion-cache)))
     (mapcar (lambda (c)
-              (let ((desc (cdr (assoc c table))))
+              (let ((desc (nth 2 (assoc c table))))
                 (list c ""
                       (if (and desc (not (string-empty-p desc)))
                           (propertize (concat "  " desc)
                                       'face 'completions-annotations)
                         ""))))
             candidates)))
+
+(defun gitq--marginalia-annotate (cand)
+  "Marginalia annotator for gitq completion candidate CAND.
+Registered under the `gitq-token' category so Marginalia users get its
+column alignment and faces; everyone else gets the plain
+`gitq--affixate' fallback.  Deliberately built from plain runtime
+`propertize'/`format' calls reading only the public
+`marginalia-separator' variable and the `marginalia--align' text
+property protocol — the `marginalia--fields' macros are invisible when
+this file is byte-compiled without Marginalia loaded (straight.el
+compiles packages in isolation), which would compile the field specs
+into calls to nonexistent functions."
+  (pcase-let ((`(,_ ,kind ,desc) (assoc cand (cdr gitq--completion-cache))))
+    (when (or kind desc)
+      (concat
+       (propertize " " 'marginalia--align t)
+       (if (boundp 'marginalia-separator) marginalia-separator "  ")
+       (propertize (format "%-9s" (or kind "")) 'face 'marginalia-type)
+       (if (boundp 'marginalia-separator) marginalia-separator "  ")
+       (propertize (or desc "") 'face 'marginalia-documentation)))))
+
+(defvar marginalia-annotator-registry)
+(defvar marginalia-annotators)
+(defvar marginalia-separator)
+
+(with-eval-after-load 'marginalia
+  (if (boundp 'marginalia-annotator-registry)
+      (cl-pushnew '(gitq-token gitq--marginalia-annotate builtin none)
+                  marginalia-annotator-registry :test #'equal)
+    (cl-pushnew '(gitq-token gitq--marginalia-annotate builtin none)
+                marginalia-annotators :test #'equal)))
 
 (defun gitq--completion-table (string predicate action)
   "Dynamic `completing-read' collection table for a growing gitq pipeline.
@@ -468,19 +509,96 @@ are fixed context."
 
 (defvar gitq--history nil "Minibuffer history list for `gitq'.")
 
+(defvar gitq--history-locations (make-hash-table :test #'equal)
+  "Pipeline string -> repo it was last run from (`gitq--location').
+Feeds the location annotations and the repo-scoping toggle in
+`gitq--history-search'.")
+
+(defun gitq--location (&optional dir)
+  "The repo root containing DIR (default `default-directory'), abbreviated."
+  (abbreviate-file-name
+   (or (locate-dominating-file (or dir default-directory) ".git")
+       (or dir default-directory))))
+
+(defun gitq--history-annotate (cand)
+  "Annotate history entry CAND with the repo it was run from."
+  (when-let ((loc (gethash cand gitq--history-locations)))
+    (propertize (concat "  " loc)
+                'face (if (facep 'marginalia-documentation)
+                          'marginalia-documentation
+                        'completions-annotations))))
+
+(defun gitq--history-table (cands)
+  "Completion table over history CANDS, newest first, location-annotated."
+  (lambda (string pred action)
+    (if (eq action 'metadata)
+        '(metadata (category . gitq-history)
+                   (display-sort-function . identity)
+                   (cycle-sort-function . identity)
+                   (annotation-function . gitq--history-annotate))
+      (complete-with-action action cands string pred))))
+
+(defvar gitq--history-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "M-.") (lambda () (interactive)
+                                  (throw 'gitq--rescope t)))
+    map)
+  "Extra keys inside the history search: \\`M-.' toggles repo scoping.")
+
 (defun gitq--history-search ()
-  "Search `gitq--history' and splice the chosen pipeline into the minibuffer."
+  "Pick a previous pipeline and run it immediately.
+Selecting an entry replaces the minibuffer contents and submits it, so
+the query executes and its results land in the *gitq* buffer right
+away.  \\`M-.' toggles between all history and only the queries last
+run from the current repo (each entry is annotated with its repo)."
   (interactive)
   (unless gitq--history
     (user-error "No gitq history yet"))
   (let* ((enable-recursive-minibuffers t)
-         (choice (completing-read "gitq history: " gitq--history nil t)))
+         (here (gitq--location))
+         (scoped nil)
+         choice)
+    (while (progn
+             (setq choice
+                   (catch 'gitq--rescope
+                     (let ((cands (if scoped
+                                      (seq-filter
+                                       (lambda (q)
+                                         (equal (gethash q gitq--history-locations) here))
+                                       gitq--history)
+                                    gitq--history)))
+                       (unless cands
+                         (user-error "No gitq history from %s yet" here))
+                       (minibuffer-with-setup-hook
+                           (lambda ()
+                             (use-local-map (make-composed-keymap
+                                             gitq--history-map (current-local-map))))
+                         (completing-read
+                          (format "gitq history%s (M-. → %s): "
+                                  (if scoped (format " [%s]" here) "")
+                                  (if scoped "all repos" "this repo only"))
+                          (gitq--history-table cands) nil t)))))
+             (eq choice t))
+      (setq scoped (not scoped)))
     (delete-minibuffer-contents)
-    (insert choice)))
+    (insert choice)
+    ;; submit the outer gitq prompt: run the query for real
+    (exit-minibuffer)))
+
+(defun gitq-focus-results ()
+  "Select the *gitq* results window, leaving the minibuffer open.
+Useful when results are longer than the screen: inspect and scroll them
+(\\`C-o' there comes back; \\`C-M-v' scrolls them without leaving the
+minibuffer at all)."
+  (interactive)
+  (if-let ((win (get-buffer-window "*gitq*")))
+      (select-window win)
+    (user-error "No *gitq* results window")))
 
 (defvar gitq--pipeline-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-r") #'gitq--history-search)
+    (define-key map (kbd "C-o") #'gitq-focus-results)
     map)
   "Keymap merged into the minibuffer's local map by `gitq--read-pipeline'.")
 
@@ -556,6 +674,7 @@ buffer, the minibuffer is pre-filled with the pipeline that produced it."
                                 (when (derived-mode-p 'gitq-results-mode)
                                   gitq--buffer-pipeline)))))
   (gitq--ensure-executable)
+  (puthash pipeline (gitq--location) gitq--history-locations)
   (if (gitq--effectful-terminal-p pipeline)
       (pcase-let ((`(,code . ,out) (gitq--run pipeline)))
         (if (zerop code)

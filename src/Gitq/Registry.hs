@@ -22,6 +22,7 @@ module Gitq.Registry
   , completeTerminals
   , completeDateWithinExamples
   , describeToken
+  , tokenKind
   ) where
 
 import Data.Char (isDigit)
@@ -278,6 +279,23 @@ completeTerminals = map ('/' :) terminalNames
 completeDateWithinExamples :: [String]
 completeDateWithinExamples =
   ["1 day", "3 days", "1 week", "2 weeks", "1 month", "3 months", "6 months", "1 year"]
+
+-- | Category label of a completion candidate, reflecting gitq's own
+-- grammar: source, step, morphism, field, operator, or terminal.  A
+-- leading @-@ (sort negation) is ignored.  Checked in the same order as
+-- the Emacs Lisp original's gitq--token-kind, so @path@ (both a step
+-- keyword and a field) classifies as a step.
+tokenKind :: String -> Maybe String
+tokenKind cand
+  | key == "in" || key `elem` completeSourceKeywords = Just "source"
+  | key `elem` stepKeywords                          = Just "step"
+  | key `elem` completeMorphisms                     = Just "morphism"
+  | key `elem` fieldNames                            = Just "field"
+  | key `elem` completeWhereOperators                = Just "operator"
+  | key `elem` completeTerminals                     = Just "terminal"
+  | otherwise                                        = Nothing
+ where
+  key = case cand of ('-' : rest@(_ : _)) -> rest; _ -> cand
 
 -- | Short description shown as a completion annotation for a token.
 describeToken :: String -> Maybe String
