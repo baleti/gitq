@@ -31,8 +31,11 @@ install-native:
 	install -m 755 "$$(cabal list-bin -fnative exe:gitq)" $(BINDIR)/gitq
 
 # Per-user zsh completion: symlink _gitq into a directory on your fpath.
-# Nothing system-wide; override ZSH_COMP_DIR to taste.
-ZSH_COMP_DIR ?= $(HOME)/.zsh/completions
+# Nothing system-wide. Default follows XDG (completion functions are
+# data, mirroring the system site-functions dir); override ZSH_COMP_DIR
+# to taste, e.g. ZSH_COMP_DIR=$$ZDOTDIR/completions.
+XDG_DATA_HOME ?= $(HOME)/.local/share
+ZSH_COMP_DIR ?= $(XDG_DATA_HOME)/zsh/completions
 
 install-zsh:
 	mkdir -p $(ZSH_COMP_DIR)
