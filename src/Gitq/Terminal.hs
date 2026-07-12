@@ -17,11 +17,35 @@ import Gitq.Frame
 import Gitq.Git
 import Gitq.Render (putUtf8, renderFramesText)
 
+-- Guards: named preconditions a terminal stacks ahead of its effect.
+-- Sequencing IO actions that throw GitqError already is the Kleisli
+-- composition of the fail-loud discipline (the CLI catches GitqError
+-- once, at the boundary) — no transformer needed; what matters is that
+-- the vocabulary is shared and a new terminal composes requirements
+-- instead of growing bespoke nested conditionals.
+
 -- | The first frame's commit SHA, or a loud error naming the terminal.
 firstSha :: String -> [Frame] -> IO String
 firstSha what frames = case frames of
   (f : _) | Just sha <- frameCommitSha f -> pure (T.unpack sha)
   _ -> gitqError ("gitq " ++ what ++ ": no commit in result")
+
+-- | Refuse to act over uncommitted work: a conflicted rewrite on top of
+-- a dirty tree would be doing more than the query says.
+requireCleanTree :: String -> IO ()
+requireCleanTree what = do
+  dirty <- runGit ["status", "--porcelain"]
+  case dirty of
+    [] -> pure ()
+    _  -> gitqError ("gitq " ++ what ++ ": working tree is not clean; commit or stash first")
+
+-- | Refuse to rewrite history the current branch doesn't contain.
+requireAncestorOfHead :: String -> String -> IO ()
+requireAncestorOfHead what sha = do
+  (code, _, _) <- rawGit ["merge-base", "--is-ancestor", sha, "HEAD"]
+  case code of
+    0 -> pure ()
+    _ -> gitqError ("gitq " ++ what ++ ": " ++ take 8 sha ++ " is not an ancestor of HEAD")
 
 applyTerminal :: [Frame] -> Terminal -> String -> IO ()
 applyTerminal frames term pipelineStr = case term of
@@ -95,18 +119,10 @@ applyTerminal frames term pipelineStr = case term of
   TRemove -> do
     sha <- firstSha "remove" frames
     full <- maybe (pure sha) (pure . T.unpack) =<< runGitString ["rev-parse", sha]
-    -- refuse on a dirty tree: a conflicted rebase over uncommitted work
-    -- would be doing more than the query says
-    dirty <- runGit ["status", "--porcelain"]
-    if not (null dirty)
-      then gitqError "gitq remove: working tree is not clean; commit or stash first"
-      else do
-        (code, _, _) <- rawGit ["merge-base", "--is-ancestor", full, "HEAD"]
-        if code /= 0
-          then gitqError ("gitq remove: " ++ take 8 full ++ " is not an ancestor of HEAD")
-          else do
-            runGitInherit ["rebase", "--onto", full ++ "^", full]
-            putStrLn ("gitq: removed commit " ++ take 8 full)
+    requireCleanTree "remove"
+    requireAncestorOfHead "remove" full
+    runGitInherit ["rebase", "--onto", full ++ "^", full]
+    putStrLn ("gitq: removed commit " ++ take 8 full)
 
   TCommit msg -> case msg of
     Just m  -> runGitInherit ["commit", "-m", m]
