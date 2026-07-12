@@ -76,6 +76,14 @@ tokenize = go
     | [c] ++ take 1 rest `elem` ["==", "!=", ">=", "<="] =
         (c : take 1 rest) : go (drop 1 rest)
     | c `elem` "><" = [c] : go rest
+    -- Double-dash flag (--not, --all: revspec vocabulary for `in`)
+    | c == '-', ('-' : n : _) <- rest, isAlpha n =
+        let (word, rest') = span isWordChar (drop 1 rest)
+        in ("--" ++ word) : go rest'
+    -- Caret-prefixed rev (^v1.0: revspec exclusion for `in`)
+    | c == '^', (n : _) <- rest, isAlpha n || isDigit n =
+        let (word, rest') = span isWordChar rest
+        in ('^' : word) : go rest'
     -- Negated field name: -date (used in `sort -date`)
     | c == '-', (n : _) <- rest, isAlpha n || n == '_' =
         let (word, rest') = span isWordChar rest

@@ -61,6 +61,9 @@ data Step
   | StFirst
   | StLast
   | StSort String Bool              -- ^ field, descending?
+  | StInRange String                -- ^ restrict to commits reachable per a
+                                    --   raw revspec (mid-pipeline @in@;
+                                    --   git parses the string, we don't)
   | StContext Int [(String, Bool)]  -- ^ keep N lines around pattern matches
                                     --   in @content@; patterns (with
                                     --   regex flags) are baked in at parse

@@ -6,6 +6,7 @@
 -- buffer rather than materializing per-field strings.
 module Gitq.Git
   ( runGit
+  , runGitLoud
   , runGitStdin
   , runGitString
   , runGitInherit
@@ -26,6 +27,7 @@ module Gitq.Git
   ) where
 
 import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (Exception, throwIO)
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as M
@@ -81,6 +83,29 @@ runGitStdin args input = do
   _ <- waitForProcess ph
   hClose devNull
   pure (filter (not . T.null) (T.lines (TE.decodeUtf8With TEE.lenientDecode out)))
+
+-- | Like 'runGit', but a git failure is surfaced instead of swallowed:
+-- Left carries git's own stderr.  For steps where an invalid argument
+-- (e.g. a bad revspec) must be a loud error, not a silently-empty
+-- result.  Stderr is drained concurrently so a chatty failure can't
+-- deadlock against the stdout pipe.
+runGitLoud :: [String] -> IO (Either String [Text])
+runGitLoud args = do
+  (Just hin, Just hout, Just herr, ph) <-
+    createProcess (proc "git" args)
+      { std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe }
+  hClose hin
+  errv <- newEmptyMVar
+  _ <- forkIO (BS.hGetContents herr >>= putMVar errv)
+  out <- BS.hGetContents hout
+  err <- takeMVar errv
+  code <- waitForProcess ph
+  case code of
+    ExitSuccess ->
+      pure (Right (filter (not . T.null)
+                     (T.lines (TE.decodeUtf8With TEE.lenientDecode out))))
+    ExitFailure _ ->
+      pure (Left (T.unpack (T.strip (TE.decodeUtf8With TEE.lenientDecode err))))
 
 -- | Run git; return the first line of output, or Nothing.
 runGitString :: [String] -> IO (Maybe Text)

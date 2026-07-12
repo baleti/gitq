@@ -65,6 +65,21 @@ be).  Date operators: =after=, =before=, =within "N days/weeks/months/years"=.
 Anything =git log= accepts as a range works: =main..feature=, =HEAD~10..=,
 a single ref.
 
+=in= also works mid-pipeline, as a step restricting a stream that earlier
+steps already transformed — and there the revspec reaches =git rev-list=
+verbatim, so =^excluded=, =--not=, and multiple revs work too:
+
+#+begin_example
+  $ gitq 'commits in v0.4.0..v0.5.0 /count'          # source modifier
+  1
+
+  $ gitq 'commits via parent* in v0.4.0..v0.5.0'     # step, after a traversal
+  6c1e51f3  claude                2026-07-11  feat(gitq): context step (grep -C for hunks); TAB folding in results buffer
+#+end_example
+
+A revspec git rejects is a loud error carrying git's own message, never a
+silently-empty result.
+
 * Navigating the object graph with =via=
 
 Morphism paths compose: each segment is type-checked against what the

@@ -81,6 +81,19 @@ execStep frames step = case step of
   StFirst         -> pure (take 1 frames)
   StLast          -> pure (case frames of [] -> []; fs -> [last fs])
   StSort field d  -> pure (execSort frames field d)
+  StInRange revspec -> do
+    -- git parses the revspec (so A..B, A...B, --not, multiple revs, :/msg
+    -- all work); we only intersect the incoming stream by commit SHA —
+    -- frameCommitSha's commit-sha fallback makes this uniform across
+    -- commit, hunk, line, and diff-line frames.  A revspec git rejects is
+    -- a loud error: silently treating it as an empty set would be exactly
+    -- the wrong-answer class this language exists to kill.
+    r <- runGitLoud (["rev-list"] ++ words revspec)
+    case r of
+      Left err -> gitqError ("gitq in: " ++ err)
+      Right shas ->
+        let inSet = S.fromList shas
+        in pure [f | f <- frames, maybe False (`S.member` inSet) (frameCommitSha f)]
   StContext n pats -> pure (map (trimContext n pats) frames)
  where
   matchPath pat f = case frameField f "path" of
