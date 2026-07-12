@@ -178,7 +178,7 @@ execVia frames m = case m of
     Nothing -> pure []
     Just sha -> do
       ls <- runGit ["diff-tree", "-p", "--no-commit-id", "-r", T.unpack sha ++ "^", T.unpack sha]
-      pure (parseDiffHunks ls sha (commitMeta f))
+      pure (parseDiffHunks ls sha (commitContext f))
 
   diffLinesOf f = case strField f "sha" of
     Nothing -> pure []
@@ -188,13 +188,7 @@ execVia frames m = case m of
                    then ["diff-tree", "--root", "-p", "--no-commit-id", "-r", T.unpack sha]
                    else ["diff-tree", "-p", "--no-commit-id", "-r", T.unpack sha ++ "^", T.unpack sha]
       ls <- runGit args
-      pure (parseDiffLines ls sha (commitMeta f))
-
-  -- the owning commit's metadata rides along on its hunk/diff-line
-  -- frames, so they can be filtered, sorted, and displayed by author,
-  -- date, or subject without a lookup
-  commitMeta f =
-    [ (k, v) | k <- ["author", "date", "message"], Just v <- [frameField f k] ]
+      pure (parseDiffLines ls sha (commitContext f))
 
   strField f k = case frameField f k of
     Just (VStr s) -> Just s
@@ -462,15 +456,15 @@ execGrep frames pat regex = fmap concat (mapM grepOne frames)
   grepOne f = case frameField f "sha" of
     Just (VStr sha) -> do
       ls <- runGit ["grep", "-n", "--no-color", if regex then "-E" else "-F", pat, T.unpack sha]
-      pure (mapMaybe (parseLine sha) ls)
+      pure (mapMaybe (parseLine f sha) ls)
     _ -> pure []
   -- "sha:path:line:content" — path may not contain ':', content may
-  parseLine sha l = do
+  parseLine f sha l = do
     (_, r1) <- breakColon l
     (path, r2) <- breakColon r1
     (nStr, content) <- breakColon r2
     if not (T.null nStr) && T.all (`elem` ("0123456789" :: String)) nStr
-      then Just (frame "line"
+      then Just (derivedFrame f "line"
                   [ ("sha", VStr sha), ("path", VStr path)
                   , ("line-number", VNum (read (T.unpack nStr)))
                   , ("content", VStr content)

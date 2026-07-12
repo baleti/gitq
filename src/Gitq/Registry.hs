@@ -137,8 +137,10 @@ diffFields = ["sha", "path", "parent-sha"]
 hunkFields :: [String]
 hunkFields = ["path", "start-line", "end-line", "content", "commit-sha", "author", "date", "message"]
 
+-- | Line frames (grep output) carry the owning commit's metadata, like
+-- every commit-derived shape ('derivedFrame' makes this structural).
 lineFields :: [String]
-lineFields = ["sha", "path", "line-number", "content", "commit-sha"]
+lineFields = ["sha", "path", "line-number", "content", "commit-sha", "author", "date", "message"]
 
 -- | Diff-line frames also carry the owning commit's metadata.
 diffLineFields :: [String]
