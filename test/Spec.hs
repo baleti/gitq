@@ -523,6 +523,25 @@ integrationTests ref = do
   (_, term30) <- run "commits take 2 /count"
   check ref "terminal identified not applied" (term30 == Just TCount)
 
+  -- Coherence laws: fused fast paths and related sources must agree
+  -- exactly with their composed/primitive spellings — commuting squares
+  -- the docs assert in prose, enforced as frame-for-frame equality.
+  sq1a <- frames "HEAD via tree.entries"
+  sq1b <- frames "HEAD via tree via entries"
+  check ref "law: tree.entries == tree . entries" (sq1a == sq1b && not (null sq1a))
+
+  sq2a <- frames "HEAD via tree.entries[Blob]"
+  sq2b <- frames "HEAD via tree via entries[Blob]"
+  check ref "law: tree.entries[Blob] == tree . entries[Blob]" (sq2a == sq2b && not (null sq2a))
+
+  sq3a <- frames "v1"
+  sq3b <- frames "commits in v1 first"
+  check ref "law: ref source == commits-in-range + first" (sq3a == sq3b && not (null sq3a))
+
+  sq4a <- frames "commits grep needle-alpha"
+  check ref "grep lines carry commit context (derivedFrame)"
+    (not (null sq4a) && all (\fr -> frameField fr "author" /= Nothing) sq4a)
+
   -- completion inside the scratch repo
   c1 <- completeCandidates ""
   check ref "complete start = sources" (c1 == completeSourceKeywords)
