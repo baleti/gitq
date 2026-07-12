@@ -12,6 +12,8 @@ module Gitq.Frame
   ( Value (..)
   , Frame (..)
   , frame
+  , derivedFrame
+  , commitContext
   , frameField
   , frameCommitSha
   , valueString
@@ -41,6 +43,23 @@ data Frame = Frame
 -- | Build a frame from a tag and attribute pairs.
 frame :: Text -> [(Text, Value)] -> Frame
 frame tag attrs = Frame tag [] (M.fromList attrs)
+
+-- | The shared commit context a derived frame carries along: the owning
+-- commit's author, date, and message (whichever are present on the
+-- parent).  For the categorically minded, frames-with-context form an
+-- environment comonad; this is its extract-and-reattach.
+commitContext :: Frame -> [(Text, Value)]
+commitContext parent =
+  [ (k, v) | k <- ["author", "date", "message"]
+  , Just v <- [frameField parent k] ]
+
+-- | Build a frame derived from a parent frame — hunks, diff lines, grep
+-- lines.  Context propagation happens here, as a property of
+-- construction, so a future derived shape cannot forget to carry the
+-- commit metadata over (grep's line frames did exactly that for two
+-- releases while hunk and diff-line frames carried it).
+derivedFrame :: Frame -> Text -> [(Text, Value)] -> Frame
+derivedFrame parent tag attrs = frame tag (attrs ++ commitContext parent)
 
 -- | Extract a field from a frame.  @author@ falls back to @name@ (so ref
 -- frames answer author-flavored queries with their name); @parents-count@
