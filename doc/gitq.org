@@ -94,6 +94,17 @@ and =pickaxe= search content and produce line frames / filter commits.
 These are the PRQL/SQL-flavored part of the language and are shape-checked
 like everything else.
 
+=in RANGE= works in two positions: as the source modifier
+(=commits in main..HEAD=, where the range simply becomes =git log='s
+argument) and as a *step*, restricting an already-transformed stream —
+=commits via parent* in v1..v2= keeps only ancestors inside the range.
+The step intersects by commit SHA (via each frame's =sha= or
+=commit-sha=), so it applies equally to commit, hunk, line, and
+diff-line frames.  The revspec is one or more tokens handed verbatim to
+=git rev-list=, so everything git accepts works — =A..B=, =A...B=,
+=^excluded=, =--not=, multiple revs — and a revspec git rejects is a
+loud error carrying git's own message, never a silently-empty result.
+
 =context N [PATTERN]= is the grep =-C= analogue for content-carrying
 frames (hunks, above all): it trims each frame's =content= to blocks of
 lines within N lines of a pattern match, separating discontiguous blocks

@@ -9,7 +9,7 @@
 -- >              | "pickaxe" PATTERN ["regex"] | "path" GLOB
 -- >              | "pick" FIELD[,...] | "take" N | "skip" N
 -- >              | "first" | "last" | "sort" ["-"]FIELD
--- >              | "context" N [PATTERN]
+-- >              | "context" N [PATTERN] | "in" range-tokens
 -- >  terminal ::= "/show" | "/copy" | ... (the closed terminal registry)
 --
 -- Typing happens at parse time, in two layers: structural field-sets
@@ -24,6 +24,7 @@ module Gitq.Parse
   , inferFields
   ) where
 
+import Control.Monad (unless)
 import Data.Char (isDigit)
 import Data.List (intercalate, isPrefixOf)
 import qualified Data.Text as T
@@ -178,6 +179,18 @@ parseStep (kw : tokens) fields = case kw of
     Right ([StSkip n], rest, fields)
   "first" -> Right ([StFirst], tokens, fields)
   "last"  -> Right ([StLast], tokens, fields)
+  "in" -> do
+    -- mid-pipeline range restriction; needs a commit-identifying field
+    -- (hunk/line/diff-line frames carry commit-sha rather than sha)
+    unless ("sha" `elem` fields || "commit-sha" `elem` fields) $
+      perr ("gitq: 'in' needs a 'sha' or 'commit-sha' field, but the current frame only has: "
+            ++ intercalate ", " fields)
+    let (rangeParts, rest) = break (\t -> isBoundary (Just t)) tokens
+    if null rangeParts
+      then perr "gitq: 'in' requires a revision range"
+      -- space-joined, split back into argv at exec: multi-token revspecs
+      -- ("HEAD --not v1", "a b ^c") reach rev-list as separate arguments
+      else Right ([StInRange (unwords rangeParts)], rest, fields)
   "context" -> do
     requireField fields "content" "context"
     (n, rest0) <- parseCount tokens "context"

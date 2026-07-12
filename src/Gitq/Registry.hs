@@ -105,7 +105,7 @@ implicitOp TFlag   = Nothing
 -- | Reserved step keywords: these always start a new stage and must be
 -- quoted when used as string values.
 stepKeywords :: [String]
-stepKeywords = ["via", "where", "grep", "pickaxe", "path", "pick", "take", "skip", "first", "last", "sort", "context"]
+stepKeywords = ["via", "where", "grep", "pickaxe", "path", "pick", "take", "skip", "first", "last", "sort", "context", "in"]
 
 -- Structural field-set typing: the exact set of fields each frame shape
 -- carries, taken from where that shape is constructed in Gitq.Git/Gitq.Exec.
@@ -287,7 +287,7 @@ completeDateWithinExamples =
 -- keyword and a field) classifies as a step.
 tokenKind :: String -> Maybe String
 tokenKind cand
-  | key == "in" || key `elem` completeSourceKeywords = Just "source"
+  | key `elem` completeSourceKeywords                = Just "source"
   | key `elem` stepKeywords                          = Just "step"
   | key `elem` completeMorphisms                     = Just "morphism"
   | key `elem` fieldNames                            = Just "field"
@@ -310,7 +310,7 @@ describeToken tok = lookup tok table
     , ("worktrees", "linked worktrees")
     , ("blobs",     "blob/tree entries under HEAD's tree")
     , ("HEAD",      "the current commit")
-    , ("in",        "restrict commits to a revision range")
+    , ("in",        "restrict to a revision range (source modifier or step)")
       -- steps
     , ("via",     "traverse a morphism (parent, tree, diff, ...)")
     , ("where",   "filter by field conditions")

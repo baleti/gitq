@@ -86,6 +86,8 @@ tokenizerTests ref = do
   check ref "two-char operators" (t "where parents-count >= 2" == ["where", "parents-count", ">=", "2"])
   check ref "comma splits" (t "pick sha, author" == ["pick", "sha", ",", "author"])
   check ref "range one token" (t "commits in main..HEAD" == ["commits", "in", "main..HEAD"])
+  check ref "double-dash flag one token" (t "in HEAD --not v1" == ["in", "HEAD", "--not", "v1"])
+  check ref "caret rev one token" (t "in HEAD ^v1.0" == ["in", "HEAD", "^v1.0"])
   check ref "unterminated quote survives" (t "where author \"ali" == ["where", "author", "\"ali"])
   check ref "unquote" (unquote "\"abc\"" == "abc" && unquote "abc" == "abc")
   check ref "unregex" (unregex "/a.b/" == "a.b")
@@ -163,6 +165,15 @@ parserTests ref = do
     (pipeSteps (p "commits pick sha author") == [StPick ["sha", "author"]])
   check ref "sort negation"
     (pipeSteps (p "commits sort -date") == [StSort "date" True])
+  check ref "mid-pipeline in after via"
+    (pipeSteps (p "commits via parent in main..HEAD take 2")
+       == [StVia MParent, StInRange "main..HEAD", StTake 2])
+  check ref "mid-pipeline in joins revspec tokens with spaces"
+    (pipeSteps (p "HEAD via parent* in HEAD --not v1")
+       == [StVia MParentStar, StInRange "HEAD --not v1"])
+  check ref "in range stops at step keyword"
+    (pipeSteps (p "branches in main first")
+       == [StInRange "main", StFirst])
   check ref "context inherits content pattern"
     (pipeSteps (p "commits via diff.hunks where content foo context 3")
        == [StVia MDiffHunks, StWhere [Cond "content" OpContains (VStr "foo")],
@@ -227,6 +238,8 @@ failLoudTests ref = do
   perr ref "commits via diff.hunks grep x" "'grep' needs a 'sha' field"
   perr ref "commits via diff.lines pickaxe x" "'pickaxe' needs a 'sha' field"
   perr ref "commits via diff.hunks context 3" "no pattern to center on"
+  perr ref "commits pick message in main" "'in' needs a 'sha' or 'commit-sha' field"
+  perr ref "commits via parent in take 5" "'in' requires a revision range"
   perr ref "commits context 3 x" "'context' needs a 'content' field"
   perr ref "commits via diff.hunks where content x context y" "'context' requires a number"
   perr ref "branches via parent" "'via parent' needs a 'parents-count' field"
@@ -487,6 +500,16 @@ integrationTests ref = do
 
   fs28c <- frames "commits via diff.lines where content needle-beta sort date"
   check ref "diff-line metadata allows sort date" (not (null fs28c))
+
+  fs24b <- frames "commits via parent* in v1..HEAD"
+  check ref "mid-pipeline in restricts the stream" (length fs24b == 2)
+
+  fs24c <- frames "commits via diff.hunks in v1..HEAD~1 pick path"
+  check ref "mid-pipeline in filters hunks via commit-sha fallback"
+    (fieldStrs "path" fs24c == ["b.txt"])
+
+  fs24d <- frames "commits in v1..HEAD via parent* in HEAD --not v1 /count"
+  check ref "revspec --not vocabulary works" (length fs24d == 2)
 
   fs28d <- frames "commits via diff.hunks where content needle-beta context 0"
   check ref "context 0 trims hunk to matching lines"

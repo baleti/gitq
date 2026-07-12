@@ -31,8 +31,8 @@ completeCandidates input = do
       -- after "commits" → "in" or steps/terminals
       | n == 1, lastCtx == Just "commits" ->
           pure ("in" : stepKeywords ++ completeTerminals)
-      -- after "commits in" → refs
-      | lastCtx == Just "in", prevCtx == Just "commits" -> completeRefs
+      -- after "in" (source modifier or mid-pipeline step) → refs
+      | lastCtx == Just "in" -> completeRefs
       -- after "via" → morphisms valid for the frame type flowing in
       | lastCtx == Just "via" -> do
           let fields = inferFields (dropLast ctx)

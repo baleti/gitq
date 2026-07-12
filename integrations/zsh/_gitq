@@ -56,7 +56,7 @@ _gitq() {
   # Group candidates by type for a nicer completion menu.
   local -a sources steps terminals morphisms fields operators
   sources=(commits branches tags refs worktrees blobs HEAD)
-  steps=(via where grep pickaxe path pick take skip first last sort in)
+  steps=(via where grep pickaxe path pick take skip first last sort context in)
   terminals=(/show /copy /insert /count /branch-off /amend /squash
              /reword /remove /delete /commit /stage /mark /worktree)
   morphisms=(parent 'parent*' 'parent+' tree tree.blobs tree.subtrees
