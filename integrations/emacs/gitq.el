@@ -3,7 +3,7 @@
 ;; Author: baleti
 ;; URL: https://github.com/baleti/gitq
 ;; Package-Requires: ((emacs "28.1"))
-;; Version: 0.5.1
+;; Version: 0.6.1
 
 ;;; Commentary:
 
@@ -349,7 +349,7 @@ by the live preview)."
       (if frames
           (dolist (f frames)
             ;; commit header when a hunk/diff-line group changes commit
-            (when (and (memq (plist-get f :type) '(hunk diff-line))
+            (when (and (memq (plist-get f :type) '(hunk diff-line line))
                        (plist-get f :commit-sha)
                        (not (equal (plist-get f :commit-sha) last-group-sha)))
               (unless (bobp) (insert "\n"))

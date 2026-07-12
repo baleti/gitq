@@ -49,8 +49,17 @@ records.  A frame's *shape* is the set of fields it carries:
 | blob entry | sha path mode                                              | =blobs=, =tree.entries=           |
 | tree object| sha                                                        | =tree=                            |
 | diff       | sha path parent-sha                                        | =diff=                            |
-| hunk       | path start-line end-line commit-sha                        | =diff.hunks=                      |
-| line       | sha path line-number content commit-sha                    | =grep=                            |
+| hunk       | path start-line end-line content commit-sha (+context)    | =diff.hunks=                      |
+| line       | sha path line-number content commit-sha (+context)        | =grep=                            |
+| diff line  | path line-number content sign commit-sha (+context)       | =diff.lines=                      |
+
+"(+context)" marks the commit-derived shapes: they carry the owning
+commit's =author=, =date=, and =message= along, so they can be filtered,
+sorted, and displayed by commit metadata without a lookup.  This
+propagation is a property of construction (=derivedFrame= in
+=Gitq.Frame=), not a per-call-site discipline — frames-with-context form
+an environment comonad, and forgetting to reattach the context is
+structurally impossible rather than merely tested for.
 
 Shapes are identified *structurally* (by field-set), not nominally: two
 different shapes may share a runtime tag (a whole tree object and a subtree
@@ -139,8 +148,12 @@ candidates, and the executor all derive from it.
 Two terminals act on the current worktree/HEAD rather than the selected
 frames: =/stage= and =/commit=.  =/amend= is guarded: if the pipeline
 selected a commit that is not HEAD, it errors instead of quietly amending
-HEAD anyway.  (CLI adaptations of individual terminals — clipboard tools,
-required arguments, =$EDITOR= — are listed in the README.)
+HEAD anyway.  Guards are named, stackable preconditions
+(=requireCleanTree=, =requireAncestorOfHead=, ... in =Gitq.Terminal=): a
+terminal composes the requirements it must check before acting, in the
+same sequencing discipline the rest of the pipeline uses.  (CLI
+adaptations of individual terminals — clipboard tools, required
+arguments, =$EDITOR= — are listed in the README.)
 
 * The Type Discipline
 
