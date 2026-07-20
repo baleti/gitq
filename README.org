@@ -107,7 +107,17 @@ the backend; the boundary is in place for when that moves.
   gitq --preview '<pipeline>'   run source and steps, never apply a terminal
   gitq --sexp '<pipeline>'      print frames as Emacs Lisp plists
   gitq --complete '<prefix>'    completion candidates for a partial pipeline
+  gitq --scrollback            split the current tmux pane's scrollback into
+                               command+output entries (add --sexp for Emacs,
+                               --tmux-target PANE for another pane)
 #+end_example
+
+=--scrollback= is a separate subsystem from the query language — it reads
+the terminal, not git, so it needs a tmux session but no repository.  It
+splits captured scrollback into one entry per command, best-effort, by
+detecting shell prompts (override the prompt pattern with
+=GITQ_SCROLLBACK_PROMPT_REGEX=).  Design and the tmux/OSC-133 measurement
+behind it are in [[file:doc/scrollback.org][doc/scrollback.org]].
 
 * Emacs integration
 

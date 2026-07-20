@@ -20,6 +20,8 @@ module Gitq.Scrollback.Ansi
   , defaultStyle
   , StyledSpan (..)
   , parseAnsiLine
+  , visibleText
+  , spansToAnsi
   ) where
 
 import Data.Char (isDigit)
@@ -52,6 +54,45 @@ data StyledSpan = StyledSpan
 -- trailing state; pass it to the next line's call to thread a whole
 -- buffer.  Adjacent runs with the same style are coalesced (so a dropped
 -- CSI/OSC in the middle of otherwise-uniform text does not split a span).
+-- | The visible text of a line, with all escape sequences stripped — used
+-- to test a captured line against the prompt regex and to recover the
+-- typed command from a prompt line.
+visibleText :: Text -> Text
+visibleText = T.concat . map spanText . snd . parseAnsiLine defaultStyle
+
+-- | Re-render styled spans back to text with real SGR escapes, so
+-- @--scrollback@ output piped to @less -R@ shows colour, and the @--sexp@
+-- @:output@ string carries ANSI for Emacs's @ansi-color@ to apply.  A
+-- default-styled span is emitted bare; a styled one is wrapped in its SGR
+-- and a trailing reset, so spans stay self-contained.
+spansToAnsi :: [StyledSpan] -> Text
+spansToAnsi = T.concat . map render
+ where
+  render (StyledSpan s t)
+    | s == defaultStyle = t
+    | otherwise         = styleSgr s <> t <> "\ESC[0m"
+
+-- | The SGR sequence that sets exactly this style starting from default.
+styleSgr :: Style -> Text
+styleSgr s = "\ESC[" <> T.intercalate ";" codes <> "m"
+ where
+  codes = concat
+    [ ["1" | styleBold s]
+    , ["4" | styleUnderline s]
+    , ["7" | styleReverse s]
+    , colorCodes "3" "9" "38" (styleFg s)
+    , colorCodes "4" "10" "48" (styleBg s)
+    ]
+  -- normal 0-7 use prefix <n0>+index, bright 8-15 use <n1>+(index-8),
+  -- 256 use <ext>;5;index
+  colorCodes n0 n1 ext = \mc -> case mc of
+    Nothing -> []
+    Just c
+      | c < 8     -> [n0 <> tShow c]
+      | c < 16    -> [n1 <> tShow (c - 8)]
+      | otherwise -> [ext <> ";5;" <> tShow c]
+  tShow = T.pack . show
+
 parseAnsiLine :: Style -> Text -> (Style, [StyledSpan])
 parseAnsiLine sty0 t0 =
   let (sty, spansRev) = go sty0 [] [] t0 in (sty, reverse spansRev)
