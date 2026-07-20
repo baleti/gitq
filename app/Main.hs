@@ -13,6 +13,7 @@ import Gitq.Git (GitqError (..), toplevel)
 import Gitq.Parse (parsePipeline)
 import Gitq.Registry (describeToken, tokenKind)
 import Gitq.Render (putUtf8, renderFramesSexp, renderFramesText)
+import Gitq.Scrollback.Browse (runBrowser)
 import Gitq.Scrollback.Capture (CaptureTarget (..), captureScrollback)
 import Gitq.Scrollback.Entry (defaultPromptRegex, parseEntriesWith)
 import Gitq.Scrollback.Render (renderEntriesSexp, renderEntriesText)
@@ -23,6 +24,7 @@ usage = mapM_ (hPutStrLn stderr)
   [ "Usage: gitq [--sexp] [--preview] <pipeline>"
   , "       gitq --complete <prefix>"
   , "       gitq --scrollback [--sexp] [--tmux-target TARGET]"
+  , "       gitq --scrollback-browse [--tmux-target TARGET]"
   , ""
   , "Examples:"
   , "  gitq 'commits take 10'"
@@ -35,8 +37,9 @@ usage = mapM_ (hPutStrLn stderr)
   , "  --sexp          print frames as Emacs Lisp plists (for the Emacs integration)"
   , "  --preview       parse and run the source and steps, but never apply a terminal"
   , "  --complete      print completion candidates for the given pipeline prefix"
-  , "  --scrollback    capture the current tmux pane's scrollback and print entries"
-  , "  --tmux-target   with --scrollback, capture a specific tmux pane"
+  , "  --scrollback        capture the current tmux pane's scrollback and print entries"
+  , "  --scrollback-browse browse captured scrollback in an interactive TUI"
+  , "  --tmux-target       with --scrollback[-browse], capture a specific tmux pane"
   ]
 
 main :: IO ()
@@ -47,6 +50,12 @@ main = do
     (a : _) | a `elem` ["-h", "--help"] -> usage >> exitSuccess
     ("--complete" : rest) -> complete False rest
     ("--complete-annotated" : rest) -> complete True rest
+    args' | "--scrollback-browse" `elem` args' -> do
+      let (target, _) = takeValFlag "--tmux-target" (filter (/= "--scrollback-browse") args')
+      scrollbackBrowse target
+        `catch` \(GitqError msg) -> do
+          hPutStrLn stderr msg
+          exitFailure
     args' | "--scrollback" `elem` args' -> do
       let (sexp, rest1) = takeFlag "--sexp" (filter (/= "--scrollback") args')
           (target, _)   = takeValFlag "--tmux-target" rest1
@@ -99,6 +108,16 @@ scrollback sexp mtarget = do
   promptRx <- maybe defaultPromptRegex T.pack <$> lookupEnv "GITQ_SCROLLBACK_PROMPT_REGEX"
   let entries = parseEntriesWith promptRx raw
   putUtf8 (if sexp then renderEntriesSexp entries else renderEntriesText entries)
+
+-- | Capture and launch the interactive entry browser in this terminal.
+-- This is what the zsh @\\eb@ widget shells out to (wrapped in
+-- @tmux display-popup@).
+scrollbackBrowse :: Maybe String -> IO ()
+scrollbackBrowse mtarget = do
+  let target = maybe CurrentPane NamedPane mtarget
+  raw <- captureScrollback target
+  promptRx <- maybe defaultPromptRegex T.pack <$> lookupEnv "GITQ_SCROLLBACK_PROMPT_REGEX"
+  runBrowser (parseEntriesWith promptRx raw)
 
 run :: Bool -> Bool -> String -> IO ()
 run sexp preview pipeline = do

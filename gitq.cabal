@@ -56,6 +56,7 @@ library
         Gitq.Registry
         Gitq.Render
         Gitq.Scrollback.Ansi
+        Gitq.Scrollback.Browse
         Gitq.Scrollback.Capture
         Gitq.Scrollback.Entry
         Gitq.Scrollback.Render
@@ -63,14 +64,17 @@ library
         Gitq.Tokenize
     build-depends:
         base       >=4.17 && <5,
+        brick,
         bytestring,
         containers,
         directory,
         filepath,
+        mtl,
         process,
         regex-tdfa,
         text,
-        time
+        time,
+        vty
     -- the library dir is injected as an absolute path by Setup.hs
     -- (ghc-pkg rejects relative extra-lib-dirs)
     if flag(native)
@@ -82,6 +86,9 @@ executable gitq
     import:           warnings
     hs-source-dirs:   app
     main-is:          Main.hs
+    -- the brick/vty scrollback browser needs the threaded RTS for its
+    -- event loop; harmless for the non-TUI subcommands
+    ghc-options:      -threaded
     build-depends:
         base,
         directory,
