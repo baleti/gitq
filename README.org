@@ -139,6 +139,16 @@ from a results buffer pre-fills the minibuffer with the query that built it.
 
 The =gitq= binary must be on =exec-path= (or set =gitq-executable=).
 
+[[file:integrations/emacs/gitq-scrollback.el][integrations/emacs/gitq-scrollback.el]] is a separate, independently-loaded
+companion for the scrollback subsystem: =M-x gitq-scrollback= captures the
+current tmux pane and opens a =gitq-scrollback-mode= buffer whose movement
+is *entry-based* — =j=/=k= jump whole command+output groups (like the
+standalone =gitq --scrollback-browse= TUI), =h=/=l= (and =TAB=) fold an
+entry's output, =y= copies its command.  Output colour is rendered by
+Emacs's own =ansi-color=.  Add =("integrations/emacs/gitq-scrollback.el")=
+to the recipe =:files= above to load it too; it needs a tmux session but
+no zsh integration.
+
 * Zsh completion
 
 Entirely per-user — completions live in any directory on your =$fpath=,
