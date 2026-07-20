@@ -1,0 +1,198 @@
+#+title: GitQ Scrollback — Capturing, Parsing, and Browsing Terminal History
+#+author: baleti
+
+* What This Is
+
+A subsystem inside the =gitq= binary that captures a terminal pane's
+scrollback, splits it into *entries* (one shell command plus its output),
+and lets you browse those entries with vim-style, entry-boundary
+navigation — in a standalone TUI, or handed to Emacs.
+
+It is a sibling of the git-query language, not part of it: a scrollback
+entry is not a =Frame=, so it gets its own typed record (=Entry=) and its
+own renderers, exactly as the main pipeline keeps one typed record per
+"thing". The two share only the house style: strict =Text=, fail-loud
+=GitqError=, plain text for humans and =--sexp= plists for Emacs.
+
+#+begin_example
+  gitq --scrollback                 # print parsed entries (human)
+  gitq --scrollback --sexp          # print entries as Emacs Lisp plists
+  gitq --scrollback-browse          # interactive entry browser (brick TUI)
+#+end_example
+
+* Why tmux, and What Degrades Without It
+
+Outside tmux/screen there is no portable way for a program to read back
+previously-printed terminal output: a plain shell session has no API for
+its own scrollback, and terminal emulators do not expose it to
+subprocesses. So the whole subsystem is gated on tmux:
+
+- *With tmux* (=$TMUX= set, =tmux= on =$PATH=): full feature — capture via
+  =tmux capture-pane=, parse, browse, send to Emacs.
+- *Without tmux*: fail loud. =gitq --scrollback*= prints, to stderr,
+  =gitq: scrollback needs tmux ($TMUX not set) — run inside a tmux
+  session= and exits non-zero. No terminal-emulator-specific escape
+  hatches (iTerm2/kitty) — out of scope, keeps the surface small.
+
+The capture command is:
+
+#+begin_example
+  tmux capture-pane -e -p -S - -J [-t TARGET]
+#+end_example
+
+- =-e= keeps SGR (color/attribute) escape sequences in the output.
+- =-p= prints to stdout.
+- =-S -= starts from the beginning of history (full scrollback).
+- =-J= joins wrapped lines, so an 80-column-wrapped command line is one
+  logical line, not several — essential for boundary detection.
+
+* Entry Boundaries: the Design Decision, Corrected by Measurement
+
+The original plan treated *OSC-133 shell-integration markers*
+(=OSC 133;A/B/C/D=, the iTerm2/VSCode/kitty convention) as the primary,
+exact boundary mechanism, on the assumption that =capture-pane -e=
+preserves OSC sequences the way it preserves SGR. **Measurement against
+real tmux 3.5a disproves that assumption**, and the design here follows
+the measurement (see the project's "verify empirically" rule):
+
+| Sequence in the pane            | Survives =capture-pane -e=? |
+|---------------------------------+-----------------------------|
+| SGR (=ESC [ … m=)               | yes (re-emitted, see below) |
+| OSC 8 hyperlink (=ESC ] 8 ; …=) | yes, if anchored to a cell  |
+| OSC 133 (shell integration)     | *no* — tmux consumes it     |
+| OSC 1337 / 52 / private OSC     | *no* — stripped             |
+
+tmux interprets OSC 133 for its own pane bookkeeping and does not put it
+back into a grid capture; only per-cell attributes (SGR, and the OSC-8
+hyperlink attribute) round-trip. A zero-width OSC-8 hyperlink is dropped
+too, so there is *no* fully-invisible marker channel that survives a tmux
+capture.
+
+Two consequences shape the implementation:
+
+1. *Heuristic prompt detection is the real primary path* under tmux, not
+   a fallback. It splits the buffer on lines that look like a shell
+   prompt. Ship a reasonable default regex, override with
+   =GITQ_SCROLLBACK_PROMPT_REGEX= (a POSIX ERE). This is best-effort by
+   nature — documented as such.
+
+2. *Exact exit codes need an out-of-band channel*, since the in-band
+   OSC-133 approach is gone. This is a genuine UX fork (a visible OSC-8
+   anchor vs. a sideband journal file written by the shell hooks) and is
+   left as a follow-up decision rather than guessed at. Until then,
+   entries from the heuristic path carry =Nothing= for the exit code and
+   are honest about it.
+
+** How SGR comes back
+
+tmux does not echo the original SGR bytes; it re-derives minimal SGR from
+the grid. Observed: an emitted =ESC[1;31m= comes back *split* as
+=ESC[1m ESC[31m=; =ESC[0m= after a color may be normalized to =ESC[39m=
+(default-foreground); and the active attribute is *restated at the start
+of each captured line*. The ANSI scanner therefore handles individual SGR
+codes and combined =m;n;p= forms alike, and threads style state across
+lines within an entry (reset to default at each entry boundary).
+
+* Module Layout
+
+All under =src/Gitq/Scrollback/=, pure Haskell plus a =tmux= subprocess —
+no Rust anywhere (a good fit for "stay in Haskell as much as possible"):
+
+| Module                    | Responsibility                                   |
+|---------------------------+--------------------------------------------------|
+| =Gitq.Scrollback.Capture= | shell out to =tmux capture-pane=, raw =Text= in  |
+| =Gitq.Scrollback.Ansi=    | SGR scanner → styled spans; drop non-SGR CSI     |
+| =Gitq.Scrollback.Entry=   | =Entry= record + boundary detection              |
+| =Gitq.Scrollback.Browse=  | the interactive TUI (brick/vty)                  |
+
+=Capture=/=Ansi=/=Entry= need no new dependencies beyond =text=/=process=;
+=Browse= adds =brick= + =vty= (+ =vector=), the one reasonable heavy-dep
+exception, since hand-rolling raw-mode terminal handling is the actual
+reliability risk brick exists to remove.
+
+** =Entry=
+
+#+begin_src haskell
+  data Entry = Entry
+    { entryIndex    :: !Int             -- 0-based, oldest first
+    , entryCommand  :: !(Maybe Text)    -- Nothing if unrecoverable
+    , entryOutput   :: ![[StyledSpan]]  -- styled lines, in order
+    , entryExitCode :: !(Maybe Int)     -- Nothing under the heuristic path
+    , entrySource   :: !EntrySource     -- FromMarkers | FromHeuristic
+    }
+#+end_src
+
+=parseEntries= picks one strategy for the whole buffer: if OSC-133 markers
+are ever recovered (a future non-tmux or marker-surviving path), use them;
+otherwise run the heuristic over the whole buffer. A buffer with no
+recognizable boundary yields a single entry covering everything — never a
+crash or an empty list.
+
+* CLI Surface
+
+Following the existing =--sexp= / =--complete= flag convention exactly:
+
+| Invocation                                | Effect                                  |
+|-------------------------------------------+-----------------------------------------|
+| =gitq --scrollback=                       | capture + parse, human-readable entries |
+| =gitq --scrollback --sexp=                | entries as Emacs Lisp plists            |
+| =gitq --scrollback-browse=                | launch the brick TUI in this terminal   |
+| =… --tmux-target TARGET=                  | capture a specific tmux pane            |
+
+The =--sexp= plist shape mirrors =Gitq.Render.renderFramesSexp= but is
+written for =Entry=, not routed through the git =Frame= renderer. =:output=
+stays one ANSI-laden string per entry — Emacs already owns a fine ANSI
+renderer (=ansi-color.el=), so style→face mapping is not duplicated on the
+Haskell side; only the TUI needs the parsed =StyledSpan= form.
+
+#+begin_example
+  (:index 0 :command "git status" :exit-code nil
+   :output "\033[32mOn branch main\033[0m\nnothing to commit\n")
+#+end_example
+
+* The Browser (=--scrollback-browse=)
+
+A brick/vty TUI. Movement is *entry-based*, which is the whole point:
+
+| Key       | Action                                            |
+|-----------+---------------------------------------------------|
+| =j= / =k= | select next / previous *entry* (not screen line)  |
+| =h= / =l= | fold / unfold the selected entry's output         |
+| =gg= / =G=| first / last entry                                |
+| =/=       | filter to entries matching command or output      |
+| =y=       | yank the selected entry's command to the clipboard|
+| =e=       | send the selected entry to Emacs                  |
+| =q=       | quit                                              |
+
+=h=/=l= mirror the Emacs =gitq-results= fold convention (=h= collapses,
+=l= expands) rather than a horizontal-cursor concept, which has no meaning
+across entries. Clipboard reuses =Gitq.Terminal='s tool detection.
+
+* Shell and Emacs Integration
+
+- *bash / zsh completion*: unchanged model — both delegate to
+  =gitq --complete PREFIX=; no grammar duplicated shell-side.
+- *zsh widgets* (=integrations/zsh/gitq-scrollback.zsh=): ZLE widgets bound
+  to =\eb= (browse) and =\ee= (send to Emacs), both requiring tmux and
+  failing loud via =zle -M= otherwise; browse runs inside
+  =tmux display-popup=.
+- *Emacs* (=integrations/emacs/gitq-scrollback.el=): =gitq-scrollback-mode=,
+  a =special-mode= with entry-based =j=/=k= navigation over a
+  =gitq-scrollback-entry= text property (the same
+  =next-single-property-change= pattern =gitq-results-mode= already uses),
+  plus =M-x gitq-scrollback= to capture and browse without leaving Emacs.
+
+* Suggested Order (and Status)
+
+1. Bash completion (independent warm-up).
+2. =Capture= + =Ansi= + tests.
+3. =Entry= heuristic path + tests, against real captured fixtures in
+   =test/fixtures/=.
+4. =--scrollback= / =--scrollback --sexp= CLI, verified end-to-end against
+   a live tmux pane.
+5. =Browse= TUI + =--scrollback-browse=.
+6. zsh widgets.
+7. =gitq-scrollback.el=.
+
+The exact-exit-code marker channel (OSC-8 anchor vs. sideband journal) is
+deferred pending the UX decision noted above.

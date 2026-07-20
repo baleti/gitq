@@ -1,0 +1,7 @@
+user@host:~/proj$ git status
+[32mOn branch main
+[39mnothing to commit, working tree clean
+user@host:~/proj$ ls
+[1m[34msrc[0m  README.md
+user@host:~/proj$ false
+user@host:~/proj$ 
