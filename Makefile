@@ -74,4 +74,17 @@ install-bash:
 	@echo "If your bash-completion package doesn't auto-source that dir, add"
 	@echo "to ~/.bashrc:  source $(BASH_COMP_DIR)/gitq"
 
-.PHONY: build native test test-native install install-native install-zsh install-bash
+# Per-user zsh scrollback widgets.  Unlike _gitq these are *sourced*, not
+# autoloaded, so there's no fpath to discover — we just symlink the file
+# next to _gitq (or wherever ZSH_COMP_DIR points) and print the one source
+# line to add to ~/.zshrc.
+install-zsh-scrollback:
+	@mkdir -p $(ZSH_COMP_DIR)
+	@ln -sf $(CURDIR)/integrations/zsh/gitq-scrollback.zsh $(ZSH_COMP_DIR)/gitq-scrollback.zsh
+	@echo "Linked gitq-scrollback.zsh into $(ZSH_COMP_DIR)."
+	@echo "Add to ~/.zshrc (widgets are sourced, not autoloaded):"
+	@echo "  source $(ZSH_COMP_DIR)/gitq-scrollback.zsh"
+	@echo "Then Meta-b browses scrollback, Meta-e sends it to Emacs (both need tmux)."
+
+.PHONY: build native test test-native install install-native install-zsh \
+        install-bash install-zsh-scrollback

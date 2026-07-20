@@ -180,6 +180,28 @@ e.g. =$ZDOTDIR/completions= if you keep zsh config under
 Completion inside the pipeline argument delegates to =gitq --complete=, so
 zsh, Emacs, and the parser always agree on what is valid where.
 
+** Scrollback widgets
+
+[[file:integrations/zsh/gitq-scrollback.zsh][integrations/zsh/gitq-scrollback.zsh]] adds two ZLE widgets over the
+scrollback subsystem (both need tmux):
+
+- =\eb= (Meta-b) browses the current pane's scrollback in an interactive
+  entry browser, overlaid with =tmux display-popup=.
+- =\ee= (Meta-e) sends the scrollback to Emacs (=emacsclient= →
+  =gitq-scrollback-open-from-file=).
+
+#+begin_src sh
+  cd ~/gitq && make install-zsh-scrollback
+#+end_src
+
+Both keys are ordinary =bindkey= bindings you can rebind.  Unlike =_gitq=
+these are *sourced*, not autoloaded, so the installer just prints the one
+=source= line for =~/.zshrc=.  There are deliberately no OSC-133
+shell-integration hooks: tmux consumes those markers, so gitq detects
+command boundaries by prompt heuristics instead (tune with
+=GITQ_SCROLLBACK_PROMPT_REGEX=) — the reasoning, measured against real
+tmux, is in [[file:doc/scrollback.org][doc/scrollback.org]].
+
 * Bash completion
 
 Same delegation model as zsh — no grammar is duplicated, both call
