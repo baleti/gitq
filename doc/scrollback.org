@@ -182,17 +182,18 @@ across entries. Clipboard reuses =Gitq.Terminal='s tool detection.
   =next-single-property-change= pattern =gitq-results-mode= already uses),
   plus =M-x gitq-scrollback= to capture and browse without leaving Emacs.
 
-* Suggested Order (and Status)
+* Status
 
-1. Bash completion (independent warm-up).
-2. =Capture= + =Ansi= + tests.
-3. =Entry= heuristic path + tests, against real captured fixtures in
-   =test/fixtures/=.
-4. =--scrollback= / =--scrollback --sexp= CLI, verified end-to-end against
-   a live tmux pane.
-5. =Browse= TUI + =--scrollback-browse=.
-6. zsh widgets.
-7. =gitq-scrollback.el=.
+Shipped (gitq 0.7.0): bash completion; =Capture=, =Ansi=, =Entry=,
+=Render=, and =Browse= modules; the =--scrollback= /
+=--scrollback --sexp= / =--scrollback-browse= CLI; the brick TUI; the
+=gitq-scrollback.el= Emacs mode; and the =\eb=/=\ee= zsh widgets — each
+verified against a live tmux pane, real Emacs, and real bash/zsh rather
+than reasoned about in the abstract.
 
-The exact-exit-code marker channel (OSC-8 anchor vs. sideband journal) is
-deferred pending the UX decision noted above.
+The one deliberate omission is an *exact* command/exit-code channel.
+OSC-133 markers can't provide it under tmux (measured above), so the two
+remaining options — a visible OSC-8-anchored marker, or a sideband
+journal file written by the shell hooks — are a UX trade-off left for the
+maintainer to choose rather than guessed at.  Until then entries from the
+heuristic path carry =Nothing= for the exit code and say so.
