@@ -60,4 +60,18 @@ install-zsh:
 	  echo "If completion doesn't appear, refresh the cache: rm -f ~/.zcompdump && compinit"; \
 	fi
 
-.PHONY: build native test test-native install install-native install-zsh
+# Per-user bash completion: symlink gitq.bash into the bash-completion
+# completions dir.  Far simpler than zsh — bash has no fpath-style
+# autodiscovery, so if the bash-completion package doesn't auto-source
+# that directory we print the one `source` line to add to ~/.bashrc.
+# Override with BASH_COMP_DIR=... .
+BASH_COMP_DIR ?= $(XDG_DATA_HOME)/bash-completion/completions
+
+install-bash:
+	@mkdir -p $(BASH_COMP_DIR)
+	@ln -sf $(CURDIR)/integrations/bash/gitq.bash $(BASH_COMP_DIR)/gitq
+	@echo "Linked gitq bash completion into $(BASH_COMP_DIR)."
+	@echo "If your bash-completion package doesn't auto-source that dir, add"
+	@echo "to ~/.bashrc:  source $(BASH_COMP_DIR)/gitq"
+
+.PHONY: build native test test-native install install-native install-zsh install-bash
