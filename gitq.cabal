@@ -55,6 +55,8 @@ library
         Gitq.Parse
         Gitq.Registry
         Gitq.Render
+        Gitq.Scrollback.Ansi
+        Gitq.Scrollback.Capture
         Gitq.Terminal
         Gitq.Tokenize
     build-depends:
