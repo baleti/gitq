@@ -21,6 +21,7 @@ import Gitq.Frame
 import Gitq.Parse
 import Gitq.Registry
 import Gitq.Render (renderFrameSexp)
+import Gitq.Scrollback.Ansi
 import Gitq.Tokenize
 
 -- Tiny harness -------------------------------------------------------------
@@ -57,6 +58,7 @@ main = do
   registryTests ref
   inferTests ref
   renderTests ref
+  ansiTests ref
   integrationTests ref
   (p, f) <- readIORef ref
   putStrLn (show p ++ " passed, " ++ show f ++ " failed")
@@ -339,6 +341,55 @@ renderTests ref = do
   check ref "sexp has type" ("(:type commit" `T.isPrefixOf` sexp)
   check ref "sexp escapes quotes" ("\\\"hi\\\"" `T.isInfixOf` sexp)
   check ref "sexp parents" (":parents (\"p1\" \"p2\")" `T.isInfixOf` sexp)
+
+-- ANSI/SGR scanner ----------------------------------------------------------------
+-- Inputs are the literal bytes tmux `capture-pane -e` produces (captured
+-- from real tmux 3.5a and pinned in test/fixtures/); the scanner must turn
+-- SGR runs into styled spans and drop every other escape cleanly.
+
+ansiTests :: Counter -> IO ()
+ansiTests ref = do
+  let bold n     = defaultStyle { styleBold = True, styleFg = Just n }
+      fgOnly n   = defaultStyle { styleFg = Just n }
+      spans      = snd . parseAnsiLine defaultStyle
+      esc        = T.pack
+
+  -- real `ls` line: ESC[1m ESC[34m src ESC[0m "  README.md"
+  check ref "ansi bold+color run then reset"
+    (spans (esc "\ESC[1m\ESC[34msrc\ESC[0m  README.md")
+       == [ StyledSpan (bold 4) "src"
+          , StyledSpan defaultStyle "  README.md" ])
+
+  -- style threads across lines: green persists as the returned Style, and
+  -- the next line's ESC[39m resets it to default (tmux restates per line)
+  let (carried, gspans) = parseAnsiLine defaultStyle (esc "\ESC[32mOn branch main")
+  check ref "ansi color span" (gspans == [StyledSpan (fgOnly 2) "On branch main"])
+  check ref "ansi style carries to caller" (carried == fgOnly 2)
+  check ref "ansi threaded reset next line"
+    (snd (parseAnsiLine carried (esc "\ESC[39mnothing to commit"))
+       == [StyledSpan defaultStyle "nothing to commit"])
+
+  -- a non-SGR CSI (erase-line) and an OSC-8 hyperlink are both dropped, and
+  -- the text on either side coalesces into one span (no style change)
+  check ref "ansi drops non-SGR CSI and OSC, coalescing text"
+    (spans (esc "a\ESC[2Kb\ESC]8;;http://x\ESC\\c") == [StyledSpan defaultStyle "abc"])
+
+  -- 256-colour, and combined parameters in one SGR
+  check ref "ansi 256-colour + combined params"
+    (spans (esc "\ESC[1;38;5;208mX\ESC[0mY")
+       == [StyledSpan (bold 208) "X", StyledSpan defaultStyle "Y"])
+
+  -- ESC[m with no parameters is a full reset
+  check ref "ansi empty params is reset"
+    (snd (parseAnsiLine (bold 1) (esc "\ESC[mplain")) == [StyledSpan defaultStyle "plain"])
+
+  -- attribute-clearing codes (22/24/27) and default-colour codes (39/49)
+  check ref "ansi 22 clears bold, 39 clears fg"
+    (fst (parseAnsiLine (bold 5) (esc "\ESC[22;39m")) == defaultStyle)
+
+  -- a truncated CSI at end of input must not crash or leak escape bytes
+  check ref "ansi truncated CSI dropped"
+    (spans (esc "ok\ESC[") == [StyledSpan defaultStyle "ok"])
 
 -- Integration against a real scratch repo -----------------------------------------
 
