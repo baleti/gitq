@@ -22,6 +22,7 @@ import Gitq.Parse
 import Gitq.Registry
 import Gitq.Render (renderFrameSexp)
 import Gitq.Scrollback.Ansi
+import Gitq.Scrollback.Entry
 import Gitq.Tokenize
 
 -- Tiny harness -------------------------------------------------------------
@@ -59,6 +60,7 @@ main = do
   inferTests ref
   renderTests ref
   ansiTests ref
+  entryTests ref
   integrationTests ref
   (p, f) <- readIORef ref
   putStrLn (show p ++ " passed, " ++ show f ++ " failed")
@@ -390,6 +392,66 @@ ansiTests ref = do
   -- a truncated CSI at end of input must not crash or leak escape bytes
   check ref "ansi truncated CSI dropped"
     (spans (esc "ok\ESC[") == [StyledSpan defaultStyle "ok"])
+
+-- Scrollback entry splitting -------------------------------------------------------
+-- Boundary detection over captured buffers.  The marker buffers are what a
+-- future OSC-133-preserving source would yield (tmux itself consumes them —
+-- see doc/scrollback.org); the heuristic buffers mirror real prompt styles.
+
+entryTests :: Counter -> IO ()
+entryTests ref = do
+  let cmds   = map entryCommand
+      exits  = map entryExitCode
+      srcs   = map entrySource
+      outOf  = map (map (T.concat . map spanText) . entryOutput)
+
+  -- (a) OSC-133 markers: exact command text, output, and exit codes
+  let markerBuf = T.concat
+        [ "\ESC]133;A\ESC\\p$ \ESC]133;B\ESC\\git status\ESC]133;C\ESC\\\n"
+        , "On branch main\n\ESC]133;D;0\ESC\\"
+        , "\ESC]133;A\ESC\\p$ \ESC]133;B\ESC\\false\ESC]133;C\ESC\\\n\ESC]133;D;1\ESC\\" ]
+      me = parseEntries markerBuf
+  check ref "entry markers: two entries" (length me == 2)
+  check ref "entry markers: commands" (cmds me == [Just "git status", Just "false"])
+  check ref "entry markers: exit codes" (exits me == [Just 0, Just 1])
+  check ref "entry markers: source tagged" (srcs me == [FromMarkers, FromMarkers])
+  check ref "entry markers: indices 0..n" (map entryIndex me == [0, 1])
+
+  -- (b) heuristic, `word$ ` prompt style; exit code always unknown
+  let bashBuf = T.unlines
+        [ "demo$ git status", "On branch main", "nothing to commit"
+        , "demo$ ls", "a.hs  b.hs", "demo$ " ]
+      be = parseEntries bashBuf
+  check ref "entry heuristic: trailing bare prompt dropped" (length be == 2)
+  check ref "entry heuristic: commands" (cmds be == [Just "git status", Just "ls"])
+  check ref "entry heuristic: output grouped"
+    (outOf be == [["On branch main", "nothing to commit"], ["a.hs  b.hs"]])
+  check ref "entry heuristic: no exit codes" (exits be == [Nothing, Nothing])
+  check ref "entry heuristic: source tagged" (srcs be == [FromHeuristic, FromHeuristic])
+
+  -- user@host:path$ style also splits under the default regex
+  let uhBuf = T.unlines ["alice@box:~/p$ pwd", "/home/alice/p", "alice@box:~/p$ id", "uid=1000"]
+      ue = parseEntries uhBuf
+  check ref "entry heuristic: user@host prompt" (cmds ue == [Just "pwd", Just "id"])
+
+  -- (c) a buffer with no recognizable boundary is one entry, not empty/crash
+  let noBound = parseEntries (T.pack "just some\noutput lines\nno prompt at all")
+  check ref "entry no-boundary: single entry" (length noBound == 1)
+  check ref "entry no-boundary: no command" (cmds noBound == [Nothing])
+  check ref "entry no-boundary: keeps all lines"
+    (outOf noBound == [["just some", "output lines", "no prompt at all"]])
+
+  -- (d) leading output before the first prompt is its own command-less entry
+  let leadBuf = T.unlines ["stale output", "demo$ echo hi", "hi"]
+      le = parseEntries leadBuf
+  check ref "entry leading output: two entries" (length le == 2)
+  check ref "entry leading output: first has no command"
+    (cmds le == [Nothing, Just "echo hi"])
+
+  -- (e) a custom prompt regex (what GITQ_SCROLLBACK_PROMPT_REGEX supplies)
+  let zBuf = T.unlines ["~/p % echo hi", "hi", "~/p % pwd", "/x"]
+      ze = parseEntriesWith "^.* % " zBuf
+  check ref "entry custom regex: zsh %% prompt splits" (cmds ze == [Just "echo hi", Just "pwd"])
 
 -- Integration against a real scratch repo -----------------------------------------
 
