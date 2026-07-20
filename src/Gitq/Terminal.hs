@@ -5,6 +5,7 @@
 -- the original are adapted for a real terminal and documented in README.
 module Gitq.Terminal
   ( applyTerminal
+  , copyToClipboard
   ) where
 
 import Control.Exception (try, SomeException)
