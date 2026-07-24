@@ -62,7 +62,7 @@ _gitq() {
   morphisms=(parent 'parent*' 'parent+' tree tree.blobs tree.subtrees
              tree.entries diff diff.hunks diff.lines history commit)
   fields=(sha author email date message path name branch parents-count)
-  operators=(== != '>' '<' '>=' '<=' regex after before within is)
+  operators=('==' '!=' '>' '<' '>=' '<=' regex after before within is)
 
   local -a src_cands step_cands term_cands morph_cands field_cands op_cands other_cands
   for c in $candidates; do
