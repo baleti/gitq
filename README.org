@@ -39,16 +39,19 @@ for seeing matched diff content inline.
 gitq began as Emacs Lisp inside the [[https://github.com/baleti/git-branch-off][git-branch-off]] package
 (=git-branch-off-gitq.el=), where the language, its registries, and its
 fail-loud type discipline were designed and battle-tested.  This repository
-is the standalone rewrite in Haskell: the language is the same, the
+is the standalone rewrite in Rust: the language is the same, the
 completion engine and parser live in one binary, and Emacs and zsh become
-thin integrations over it.
+thin integrations over it.  (It passed through a Haskell implementation on
+the way; the Rust port is verified byte-identical to it across a 145-case
+golden corpus — see [[file:tools/corpus.txt][tools/corpus.txt]] — apart from a
+short list of deliberate fixes, below.)
 
 * Installation
 
 ** Prebuilt binary (no toolchain needed)
 
-Every tagged release ships a Linux x86_64 binary (native gix backend
-included), built and tested by [[file:.github/workflows/release.yml][the release workflow]]:
+Every tagged release ships a Linux x86_64 binary, built and tested by
+[[file:.github/workflows/release.yml][the release workflow]]:
 
 #+begin_src sh
   curl -L -o ~/.local/bin/gitq \
@@ -65,40 +68,36 @@ with it.  A user-installed binary on PATH always takes precedence, and
 
 ** From source
 
-Requires GHC ≥ 9.4 and cabal; the native backend additionally needs a
-Rust toolchain.
+Requires a Rust toolchain (1.85 or newer).  There is no second toolchain
+and no optional backend flag: the in-process gix backend is a module, so
+one =cargo build= produces the whole thing.
 
 #+begin_src sh
   git clone https://github.com/baleti/gitq ~/gitq
   cd ~/gitq
-  make install           # subprocess-git only, no Rust needed
-  make install-native    # with the in-process gix backend
+  make install
 #+end_src
 
-Both install to =~/.local/bin= (override with =BINDIR=...=).  Run the
-test suite with =cabal test= (or =make test-native=).
+Installs to =~/.local/bin= (override with =BINDIR=...=).  =make test= runs
+the unit suite; =make corpus= runs the golden corpus, which drives the real
+binary over a generated fixture repository and checks the CLI surface
+end to end — plain output, =--sexp=, the fail-loud error catalogue, and
+completion.
 
-** Optional: the Rust in-process git backend
+** The in-process git backend
 
-With a Rust toolchain installed, =make install-native= (or =cabal
-install -fnative=) links a small Rust static library (=native/=, gix)
-into the same =gitq= binary.  Commit-batch
-resolution and =parent*=/=parent+= closures then run in-process instead
-of through git subprocesses — same output (the Rust side emits records in
-the exact byte format of gitq's =git log= format string, parsed by the
-same function), with the subprocess path kept as an automatic fallback on
-any native-side failure.  =GITQ_NO_NATIVE=1= forces the fallback at
-runtime, so one binary can A/B itself.
+Commit-batch resolution and =parent*=/=parent+= closures run in-process
+through [[https://github.com/GitoxideLabs/gitoxide][gix]] rather than
+through git subprocesses.  The subprocess path is kept as an automatic
+fallback on any failure, and =GITQ_NO_NATIVE=1= forces it at runtime, so
+one binary can A/B itself — =make corpus= does exactly that, and the two
+backends are required to agree byte for byte.
 
-Where it matters: fixed-cost latency on small queries (a small repo's
-=parent*= closure drops ~52 ms → ~27 ms — the live-preview path), and
-deep-history walks: gix enumerates git/git's 81,470-commit closure in
-0.08 s when a commit-graph is present (=git commit-graph write
---reachable=; git maintains it automatically on gc) — 20× faster than
-libgit2 and faster than =git rev-list= itself (measured in
-=native/examples/walk.rs= vs =walk_gix.rs=).  End-to-end bulk queries are
-currently bounded by frame construction on the Haskell side rather than
-the backend; the boundary is in place for when that moves.
+Where it matters: fixed-cost latency on small queries (the live-preview and
+per-keystroke completion path), and deep-history walks — gix enumerates
+git/git's 81,470-commit closure in 0.08 s when a commit-graph is present
+(=git commit-graph write --reachable=; git maintains it automatically on
+gc), 20x faster than libgit2 and faster than =git rev-list= itself.
 
 * CLI usage
 
@@ -238,8 +237,37 @@ each failing loud rather than degrading silently:
   open =$EDITOR=, as git normally would.
 - =/remove= is implemented directly (=git rebase --onto=) with clean-tree
   and is-ancestor guards; =/reword= currently only rewords HEAD.
-- =/regex/= patterns and the =regex= operator are POSIX ERE (the original
-  used Emacs regexp syntax); =git grep= and pickaxe patterns were always
-  ERE in both.
+- =/regex/= patterns and the =regex= operator use the Rust =regex= crate's
+  syntax — a near-superset of POSIX ERE, but leftmost-first rather than
+  leftmost-longest.  gitq only ever asks match-or-not, never match extent,
+  so the difference is not observable in query results.  (The Emacs Lisp
+  original used Emacs regexp syntax; the Haskell implementation used POSIX
+  ERE.)  =git grep= and pickaxe patterns are ERE in all three.
 - =where date after/before= parses dates properly (timezone-aware) instead
   of comparing lexically.
+
+* Fixed in the Rust port
+
+These behaviours differ from the last Haskell release (0.7.0) on purpose.
+Each was a silent wrong answer or a documented gap.
+
+- *The tokenizer no longer discards characters it does not recognise.*
+  0.7.0 dropped =+ % & ! ? : ; ( ) # $ = @= on the floor, mid-token, so a
+  query quietly became a different query: =where author @lice= searched for
+  ="lice"= and matched =alice=.  Unusable characters are now an error, and
+  the word class was widened so =@{upstream}= and a bare =+= tokenize as
+  themselves.
+- *=where= with no conditions is an error.*  It used to parse as a
+  keep-everything no-op — the only step that did.
+- *=where <flag> is true= works.*  =is= compared the flag's boolean against
+  the literal string ="true"=, so the natural spelling silently matched
+  nothing while the bare =where <flag>= worked.
+- *Worktree =modified= / =staged= / =untracked= are populated.*  They were
+  declared on the shape and never filled in, so they read as false forever.
+- *=path GLOB= after a =where= on a path-carrying shape.*  =path= is both a
+  field and a step keyword; the parser used to read =... where content x
+  path "*.txt"= as a second condition substring-matching the literal glob.
+- *=diff.hunks= covers root commits.*  =diff.lines= passed =--root= and
+  =diff.hunks= did not, so a root commit's hunks came back empty.
+- *New: the =hunks= morphism*, the standalone factor of =diff.hunks=, so
+  =via diff via hunks= composes and =diff.hunks == diff . hunks= holds.

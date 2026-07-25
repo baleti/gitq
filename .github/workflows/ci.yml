@@ -1,4 +1,4 @@
-# Run the test suite (native backend included) on every push and PR.
+# Build, lint and test on every push and PR, then run the golden corpus.
 name: ci
 
 on:
@@ -12,31 +12,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: haskell-actions/setup@v2
-        id: haskell
-        with:
-          ghc-version: "9.6"
-          cabal-version: "latest"
-
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: native
 
-      - uses: actions/cache@v4
-        with:
-          path: ${{ steps.haskell.outputs.cabal-store }}
-          key: cabal-${{ runner.os }}-${{ hashFiles('gitq.cabal') }}
-          restore-keys: cabal-${{ runner.os }}-
-
-      - name: Configure git for the test suite's scratch repo
+      - name: Configure git for the fixture repository
         run: |
           git config --global user.name ci
           git config --global user.email ci@example.invalid
           git config --global init.defaultBranch main
 
+      - name: Lint
+        run: make lint
+
       - name: Test
-        run: |
-          cabal update
-          make test-native
+        run: make test
+
+      # The unit tests don't touch the CLI surface.  The corpus runs the
+      # real binary over a real repository and A/B's the gix backend
+      # against subprocess git — 0 mismatches is the contract that lets
+      # either backend be used interchangeably.
+      - name: Golden corpus (gix vs subprocess git)
+        run: make corpus

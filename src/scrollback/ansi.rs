@@ -341,7 +341,10 @@ mod tests {
 
     #[test]
     fn visible_text_strips_everything() {
-        assert_eq!(visible_text("\u{1b}[1;32muser@host\u{1b}[0m$ ls"), "user@host$ ls");
+        assert_eq!(
+            visible_text("\u{1b}[1;32muser@host\u{1b}[0m$ ls"),
+            "user@host$ ls"
+        );
     }
 
     #[test]

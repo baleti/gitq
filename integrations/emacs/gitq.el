@@ -9,7 +9,7 @@
 
 ;; Emacs front-end for gitq, the typed, categorical query language for
 ;; git.  All parsing, type checking, completion candidates, and execution
-;; live in the `gitq' binary (the Haskell implementation in this repo);
+;; live in the `gitq' binary (the Rust implementation in this repo);
 ;; this package provides the interactive Emacs experience on top of it:
 ;;
 ;; - `M-x gitq': minibuffer entry with context-aware completion for the

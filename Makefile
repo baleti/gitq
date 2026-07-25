@@ -1,34 +1,49 @@
-# Plain Haskell build (no Rust toolchain needed; subprocess git everywhere)
-build:
-	cabal build exe:gitq
+# gitq — Rust build.
+#
+# One toolchain, one command.  There is no separate "native" build any more:
+# the gix in-process backend is a module, not a linked staticlib behind a
+# cabal flag, so `cargo build` is the whole story.  GITQ_NO_NATIVE=1 at
+# runtime still forces the subprocess-git path, which is how the two are
+# A/B'd from a single binary.
 
-# Build with the Rust in-process git backend linked in (native/, libgit2).
-# One binary; at runtime it falls back to subprocess git if the native
-# backend fails, and GITQ_NO_NATIVE=1 forces the fallback for A/B testing.
-native:
-	cd native && cargo build --release
-	cabal build -fnative exe:gitq
+CARGO ?= cargo
+
+build:
+	$(CARGO) build --release
 
 test:
-	cabal test
+	$(CARGO) test
 
-test-native:
-	cd native && cargo build --release
-	cabal test -fnative
+lint:
+	$(CARGO) clippy --all-targets -- -D warnings
+	$(CARGO) fmt --check
 
-# Install by copying the in-tree build (avoids cabal install's
-# build-from-sdist detour, which would rebuild the Rust crate in a temp
-# dir).  Override BINDIR for a different destination.
+# Golden corpus: run the corpus through a binary and diff two runs.  Used
+# during the Haskell->Rust port and kept because it is the only check that
+# covers the CLI surface end to end (plain output, --sexp, the error
+# catalogue, and completion) against a real repository.
+#
+#   make corpus                      A/B the two backends against each other
+#   make corpus REF=/path/to/other   diff this build against another binary
+BIN := target/release/gitq
+CORPUS_DIR ?= $(CURDIR)/target/corpus
+
+corpus: build
+	@bash tools/fixture.sh $(CORPUS_DIR)/fixture
+	@GITQ_NO_NATIVE=1 bash tools/golden.sh $(BIN) $(CORPUS_DIR)/subprocess $(CORPUS_DIR)/fixture
+	@bash tools/golden.sh $(if $(REF),$(REF),$(BIN)) $(CORPUS_DIR)/candidate $(CORPUS_DIR)/fixture
+	@bash tools/compare.sh $(CORPUS_DIR)/subprocess $(CORPUS_DIR)/candidate
+
+# Install by copying the release build.  Override BINDIR for a different
+# destination.
 BINDIR ?= $(HOME)/.local/bin
 
-install:
-	cabal build exe:gitq
-	install -m 755 "$$(cabal list-bin exe:gitq)" $(BINDIR)/gitq
-
-install-native:
-	cd native && cargo build --release
-	cabal build -fnative exe:gitq
-	install -m 755 "$$(cabal list-bin -fnative exe:gitq)" $(BINDIR)/gitq
+install: build
+	install -d $(BINDIR)
+	install -m 755 $(BIN) $(BINDIR)/gitq
+	@echo "Installed $(BINDIR)/gitq"
+	@echo "The Emacs and zsh integrations resolve gitq on \$$PATH, so they"
+	@echo "pick this up with no further steps."
 
 # Per-user zsh completion: copy _gitq into a fixed XDG-style dir.
 # Nothing system-wide, and no fpath auto-detection — always the same
@@ -50,7 +65,6 @@ install-zsh:
 # completions dir.  Far simpler than zsh — bash has no fpath-style
 # autodiscovery, so if the bash-completion package doesn't auto-source
 # that directory we print the one `source` line to add to ~/.bashrc.
-# Override with BASH_COMP_DIR=... .
 BASH_COMP_DIR ?= $(XDG_DATA_HOME)/bash-completion/completions
 
 install-bash:
@@ -72,5 +86,8 @@ install-zsh-scrollback:
 	@echo "  source $(ZSH_COMP_DIR)/gitq-scrollback.zsh"
 	@echo "Then Meta-b browses scrollback, Meta-e sends it to Emacs (both need tmux)."
 
-.PHONY: build native test test-native install install-native install-zsh \
-        install-bash install-zsh-scrollback
+clean:
+	$(CARGO) clean
+
+.PHONY: build test lint corpus install install-zsh install-bash \
+        install-zsh-scrollback clean

@@ -56,8 +56,8 @@ records.  A frame's *shape* is the set of fields it carries:
 "(+context)" marks the commit-derived shapes: they carry the owning
 commit's =author=, =date=, and =message= along, so they can be filtered,
 sorted, and displayed by commit metadata without a lookup.  This
-propagation is a property of construction (=derivedFrame= in
-=Gitq.Frame=), not a per-call-site discipline — frames-with-context form
+propagation is a property of construction (=Frame::derived= in
+=frame.rs=), not a per-call-site discipline — frames-with-context form
 an environment comonad, and forgetting to reattach the context is
 structurally impossible rather than merely tested for.
 
@@ -71,11 +71,11 @@ what the type checker actually uses.
 A *morphism* maps one frame to a /list/ of frames of some (possibly
 different) shape: a commit has several parents, a tree has many entries, a
 path was touched by many commits.  Each morphism is registered
-(=Gitq.Registry=) with:
+(=registry.rs=) with:
 
-- =morphismRequires= — the field its input shape must carry (its *domain*),
-- =morphismYields= — the field-set of its output shape (its *codomain*),
-- its implementation in =Gitq.Exec=.
+- =morphism_requires= — the field its input shape must carry (its *domain*),
+- =morphism_yields= — the field-set of its output shape (its *codomain*),
+- its implementation in =exec.rs=.
 
 Because every morphism's output is the same kind of thing as its input (a
 frame list), morphisms compose generically: =via parent.tree= is =parent=
@@ -93,7 +93,7 @@ fused forms (=tree.entries=, =diff.hunks=) remain single efficient
 morphisms while still reading — and type-checking — exactly as their name
 says.  Written with the leading dot instead (=.parent.tree=,
 =.tree.entries=, ...), it's normalized to the same form before matching —
-see =parseMorphismPath= in =Gitq.Registry=.
+see =parse_morphism_path= in =registry.rs=.
 
 ** Relational steps
 
@@ -124,9 +124,9 @@ the pipeline already searched for — =where content= values, =grep= and
 result.
 
 =where= has no explicit =contains= keyword.  A value right after a field
-with no recognized operator between them (=operatorSignature=: =====,
+with no recognized operator between them (=operator_signature=: =====,
 =!==, =>=, =<=, =>==, =<==, =regex=, =after=, =before=, =within=, =is=) gets
-the field type's /implicit operator/ (=implicitOp=): a substring match for
+the field type's /implicit operator/ (=implicit_op=): a substring match for
 text-shaped fields — =where author bal=, =where sha 95866=, =where date
 2026-07= — and equality for numbers (=where parents-count 2=; substring
 over digits would make 2 match 12).  Bare equality on a text field needs
@@ -141,7 +141,7 @@ matches SHA prefixes.
 A =/terminal= consumes the pipeline's final value and performs an effect:
 display (=/show=), clipboard (=/copy=), repository mutation (=/branch-off=,
 =/reword=, =/remove= — alias =/delete=, =/worktree=, ...).  Terminals live in
-a registry (=terminalNames= in =Gitq.Registry= plus the closed =Terminal=
+a registry (=TERMINAL_NAMES= in =registry.rs= plus the closed =Terminal=
 AST type) that is the single source of truth: the parser, the completion
 candidates, and the executor all derive from it.
 
@@ -149,7 +149,7 @@ Two terminals act on the current worktree/HEAD rather than the selected
 frames: =/stage= and =/commit=.  =/amend= is guarded: if the pipeline
 selected a commit that is not HEAD, it errors instead of quietly amending
 HEAD anyway.  Guards are named, stackable preconditions
-(=requireCleanTree=, =requireAncestorOfHead=, ... in =Gitq.Terminal=): a
+(=require_clean_tree=, =require_ancestor_of_head=, ... in =terminal.rs=): a
 terminal composes the requirements it must check before acting, in the
 same sequencing discipline the rest of the pipeline uses.  (CLI
 adaptations of individual terminals — clipboard tools, required
@@ -166,9 +166,9 @@ Typing happens at *parse time*, in two layers:
    immediate error naming the fields the frame actually has.  Morphism
    chains fold this check segment by segment.
 
-2. *Scalar types.*  Every field has a scalar type (=fieldType=:
+2. *Scalar types.*  Every field has a scalar type (=field_type=:
    string, sha, date, number, flag) and every where-operator declares which
-   types it accepts (=operatorSignature=).  =where date > "2020"=
+   types it accepts (=operator_signature=).  =where date > "2020"=
    is rejected suggesting =after/before/within=; =where parents-count ==
    "two"= is rejected as not a number; a bare =where author= is rejected
    because only flag fields can be bare conditions.  =sort= picks its
@@ -192,20 +192,20 @@ fail silently and is now a loud error, each with a regression test:
 
 * Extending GitQ
 
-- *New morphism*: add a constructor to =Morphism= (=Gitq.AST=), its domain
-  and codomain to =morphismRequires=/=morphismYields=, its surface form to
-  =parseMorphismPath='s form table (all =Gitq.Registry=), and its executor
-  branch to =execVia= (=Gitq.Exec=).  GHC's exhaustiveness checking makes
+- *New morphism*: add a constructor to =Morphism= (=ast.rs=), its domain
+  and codomain to =morphism_requires=/=morphism_yields=, its surface form to
+  =parse_morphism_path='s form table (all =registry.rs=), and its executor
+  branch to =exec_via= (=exec.rs=).  Rust's exhaustive =match= makes
   every place that needs a branch a compile error until it has one;
   completion, type checking, and chain composition pick the rest up from
   the registry.
-- *New terminal*: add a constructor to =Terminal= (=Gitq.AST=), its name to
-  =terminalNames= and its parser case to =parseTerminal= (=Gitq.Parse=),
-  and its effect branch to =applyTerminal= (=Gitq.Terminal=).
+- *New terminal*: add a variant to =Terminal= (=ast.rs=), its name to
+  =TERMINAL_NAMES= and its parser case to =parse_terminal= (=parse.rs=),
+  and its effect branch to =apply_terminal= (=terminal.rs=).
 - *New field*: add it to the relevant shape's field-set constant, to
-  =fieldNames=, and to =fieldType='s table (all =Gitq.Registry=).
+  =FIELD_NAMES=, and to =field_type='s match (all =registry.rs=).
 
-The registry-coherence tests (=registryTests= in =test/Spec.hs=) fail if
+The registry-coherence tests (the =registry::tests= module) fail if
 these tables drift apart — every completion candidate must parse, every
 parseable morphism must have a registered domain, every operator must have
 a signature.
@@ -237,29 +237,32 @@ The library (=src/Gitq/=) mirrors the pipeline:
 
 | Module          | Role                                                       |
 |-----------------+------------------------------------------------------------|
-| =Gitq.Frame=    | frames, values, field access                               |
-| =Gitq.AST=      | pipeline/source/step/morphism/terminal types               |
-| =Gitq.Registry= | field-sets, scalar types, operator signatures, morphism    |
+| =frame.rs=    | frames, values, field access                               |
+| =ast.rs=      | pipeline/source/step/morphism/terminal types               |
+| =registry.rs= | field-sets, scalar types, operator signatures, morphism    |
 |                 | domains/codomains and surface forms, terminal names,       |
 |                 | completion candidate sets and descriptions                 |
-| =Gitq.Tokenize= | the flat tokenizer (quotes, /regex/ vs /terminal, ...)     |
-| =Gitq.Parse=    | the parser and both typing layers; =inferFields=           |
-| =Gitq.Git=      | git execution (stderr discarded) and data fetchers         |
-| =Gitq.Native=   | FFI boundary to the optional Rust backend (=-fnative=)     |
-| =Gitq.Exec=     | source/step/morphism executors, diff parsing               |
-| =Gitq.Complete= | context-aware completion, replaying the real parser        |
-| =Gitq.Render=   | plain-text and s-expression frame rendering                |
-| =Gitq.Terminal= | terminal effects for the CLI                               |
+| =tokenize.rs= | the flat tokenizer (quotes, /regex/ vs /terminal, ...)     |
+| =parse.rs=    | the parser and both typing layers; =infer_fields=           |
+| =git.rs=      | git execution (stderr discarded) and data fetchers         |
+| =native.rs=   | in-process gix backend; falls back to subprocess git       |
+| =exec.rs=     | source/step/morphism executors, diff parsing               |
+| =complete.rs= | context-aware completion, replaying the real parser        |
+| =render.rs=   | plain-text and s-expression frame rendering                |
+| =terminal.rs= | terminal effects for the CLI                               |
 
-=app/Main.hs= is the CLI entry point (=--complete=, =--sexp=, =--preview=);
-tests in =test/Spec.hs= (tokenizer, parser, the fail-loud error catalogue,
-grammar disambiguation properties P1–P7, registry coherence, and
-integration against a scratch repository); Emacs integration in
-=integrations/emacs/gitq.el=; zsh completion in =integrations/zsh/_gitq=.
+=src/main.rs= is the CLI entry point (=--complete=, =--sexp=, =--preview=,
+=--scrollback=).  Unit tests live beside each module in =#[cfg(test)]=
+blocks (tokenizer, parser, the fail-loud error catalogue, registry
+coherence, diff parsing, rendering, completion); =tools/corpus.txt= plus
+=tools/fixture.sh= drive the built binary over a real repository and check
+the whole CLI surface, including an A/B of the two git backends.  Emacs
+integration in =integrations/emacs/gitq.el=; zsh completion in
+=integrations/zsh/_gitq=.
 
-=native/= is the optional Rust backend (gix, built as a static library
-and linked in by the =native= cabal flag — see the README).  Its contract with =Gitq.Native= is a single C function
-returning commit records in the exact byte layout of the =git log= format
-string above, so both backends are parsed by the same
-=Gitq.Git.parseCommitLine= and cannot drift; any native failure falls
-back to subprocess git.
+=native.rs= is the in-process gix backend.  It builds frames directly —
+there is no serialisation boundary to keep in sync, because there is no
+longer a language boundary — and any failure returns =None= so the caller
+takes the subprocess path.  =GITQ_NO_NATIVE=1= forces that path, so one
+binary can A/B itself; =make corpus= requires the two to agree byte for
+byte.

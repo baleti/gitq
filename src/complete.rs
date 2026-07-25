@@ -82,8 +82,7 @@ pub fn complete_candidates(input: &str) -> Vec<String> {
     // implicit-contains-eligible types) value candidates
     if let Some(field_tok) = last_text {
         let fields = current_type_fields(ctx);
-        if enclosing_step(ctx).as_deref() == Some("where")
-            && fields.iter().any(|f| f == field_tok)
+        if enclosing_step(ctx).as_deref() == Some("where") && fields.iter().any(|f| f == field_tok)
         {
             let mut out = strs(COMPLETE_WHERE_OPERATORS);
             if implicit_op(field_type(field_tok)).is_some() {
@@ -314,7 +313,13 @@ mod tests {
     fn every_offered_candidate_classifies_and_describes() {
         // the annotated protocol must never emit a blank kind column for a
         // candidate we ourselves offered
-        for input in ["", "commits ", "commits via ", "commits where ", "commits sort "] {
+        for input in [
+            "",
+            "commits ",
+            "commits via ",
+            "commits where ",
+            "commits sort ",
+        ] {
             for cand in c(input) {
                 // dynamic values (author names, shas) legitimately have no
                 // kind; static grammar tokens must always have one

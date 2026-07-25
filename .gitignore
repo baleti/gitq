@@ -1,4 +1,3 @@
-dist-newstyle/
+target/
 *.elc
 .worktree/
-native/target/

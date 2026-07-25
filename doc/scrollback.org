@@ -95,15 +95,14 @@ lines within an entry (reset to default at each entry boundary).
 
 * Module Layout
 
-All under =src/Gitq/Scrollback/=, pure Haskell plus a =tmux= subprocess —
-no Rust anywhere (a good fit for "stay in Haskell as much as possible"):
+All under =src/scrollback/=, plus a =tmux= subprocess:
 
 | Module                    | Responsibility                                   |
 |---------------------------+--------------------------------------------------|
-| =Gitq.Scrollback.Capture= | shell out to =tmux capture-pane=, raw =Text= in  |
-| =Gitq.Scrollback.Ansi=    | SGR scanner → styled spans; drop non-SGR CSI     |
-| =Gitq.Scrollback.Entry=   | =Entry= record + boundary detection              |
-| =Gitq.Scrollback.Browse=  | the interactive TUI (brick/vty)                  |
+| =scrollback/capture.rs= | shell out to =tmux capture-pane=, raw =Text= in  |
+| =scrollback/ansi.rs=    | SGR scanner → styled spans; drop non-SGR CSI     |
+| =scrollback/entry.rs=   | =Entry= record + boundary detection              |
+| =scrollback/browse.rs=  | the interactive TUI (brick/vty)                  |
 
 =Capture=/=Ansi=/=Entry= need no new dependencies beyond =text=/=process=;
 =Browse= adds =brick= + =vty= (+ =vector=), the one reasonable heavy-dep
@@ -139,11 +138,11 @@ Following the existing =--sexp= / =--complete= flag convention exactly:
 | =gitq --scrollback-browse=                | launch the brick TUI in this terminal   |
 | =… --tmux-target TARGET=                  | capture a specific tmux pane            |
 
-The =--sexp= plist shape mirrors =Gitq.Render.renderFramesSexp= but is
+The =--sexp= plist shape mirrors =render::render_frames_sexp= but is
 written for =Entry=, not routed through the git =Frame= renderer. =:output=
 stays one ANSI-laden string per entry — Emacs already owns a fine ANSI
 renderer (=ansi-color.el=), so style→face mapping is not duplicated on the
-Haskell side; only the TUI needs the parsed =StyledSpan= form.
+gitq side; only the TUI needs the parsed =StyledSpan= form.
 
 #+begin_example
   (:index 0 :command "git status" :exit-code nil
@@ -166,7 +165,7 @@ A brick/vty TUI. Movement is *entry-based*, which is the whole point:
 
 =h=/=l= mirror the Emacs =gitq-results= fold convention (=h= collapses,
 =l= expands) rather than a horizontal-cursor concept, which has no meaning
-across entries. Clipboard reuses =Gitq.Terminal='s tool detection.
+across entries. Clipboard reuses =terminal.rs='s tool detection.
 
 * Shell and Emacs Integration
 
