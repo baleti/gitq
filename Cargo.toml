@@ -2,7 +2,7 @@
 name = "gitq"
 version = "0.8.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "GitQ — a typed query language for git"
 license = "MIT"
 authors = ["baleti"]
