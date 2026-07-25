@@ -22,11 +22,15 @@
 use regex::Regex;
 
 use super::ansi::{parse_ansi_line, visible_text, Style, StyledSpan};
+use super::mark::{marks_in, MarkKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntrySource {
     Markers,
     Heuristic,
+    /// Boundaries came from gitq's own invisible OSC-8 markers — exact, not
+    /// inferred.  See [`crate::scrollback::mark`].
+    GitqMark,
 }
 
 /// One shell command and its output.
@@ -143,14 +147,107 @@ fn parse_heuristic(rx: &Regex, raw: &str) -> Vec<Entry> {
 
     groups
         .into_iter()
-        .map(|(command, out_lines)| Entry {
-            index: 0,
-            command,
-            output: style_lines(out_lines.iter().map(|s| s.to_string()).collect()),
-            exit_code: None,
-            source: EntrySource::Heuristic,
+        .map(|(command, out_lines)| {
+            // Where gitq marked its own output, those boundaries are exact
+            // and win over the lines the prompt heuristic happened to group.
+            match marked_region(&out_lines) {
+                Some((region, exit)) => Entry {
+                    index: 0,
+                    command,
+                    output: style_lines(region.iter().map(|s| s.to_string()).collect()),
+                    exit_code: exit,
+                    source: EntrySource::GitqMark,
+                },
+                None => Entry {
+                    index: 0,
+                    command,
+                    output: style_lines(out_lines.iter().map(|s| s.to_string()).collect()),
+                    exit_code: None,
+                    source: EntrySource::Heuristic,
+                },
+            }
         })
         .collect()
+}
+
+// --- gitq's own markers --------------------------------------------------
+
+/// The slice of LINES that gitq marked as its own output, plus the exit code
+/// its end marker carried.
+///
+/// An end marker that never arrived (the region is still being written, or
+/// its tail has already been evicted from the history limit) is not a failure:
+/// the region simply runs to the end of what we have, with an unknown exit
+/// code.  Only the *first* region in a group is taken — a group holding two
+/// gitq invocations means the prompt heuristic under-split, and guessing
+/// which one the user meant would be worse than reporting the first.
+fn marked_region<'a>(lines: &[&'a str]) -> Option<(Vec<&'a str>, Option<i32>)> {
+    let mut begin: Option<(usize, String)> = None;
+
+    for (i, l) in lines.iter().enumerate() {
+        for m in marks_in(l) {
+            match (&begin, m.kind) {
+                (None, MarkKind::Begin) => begin = Some((i, m.id)),
+                (Some((b, id)), MarkKind::End) if *id == m.id => {
+                    return Some((lines[*b..=i].to_vec(), m.exit));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    begin.map(|(b, _)| (lines[b..].to_vec(), None))
+}
+
+/// Wrapper mirroring [`marked_region`] but keeping the begin marker's
+/// recorded pipeline, which the exact path reports as the entry's command.
+fn marked_region_cmd(lines: &[&str]) -> Option<String> {
+    lines.iter().flat_map(|l| marks_in(l)).find_map(|m| m.cmd)
+}
+
+/// Every gitq-marked region in a captured buffer, ignoring prompts entirely.
+///
+/// This is the exact path: it needs no prompt regex, no shell integration and
+/// no configuration, because gitq stated these boundaries itself when it
+/// printed.  Backs `--scrollback --gitq-only`.
+pub fn parse_gitq_regions(raw: &str) -> Vec<Entry> {
+    let lines: Vec<&str> = raw.lines().collect();
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut open: Option<(usize, String)> = None;
+
+    for (i, l) in lines.iter().enumerate() {
+        for m in marks_in(l) {
+            match (&open, m.kind) {
+                (None, MarkKind::Begin) => open = Some((i, m.id)),
+                (Some((b, id)), MarkKind::End) if *id == m.id => {
+                    entries.push(region_entry(&lines[*b..=i], m.exit));
+                    open = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    // a region whose end marker is missing still carries usable output
+    if let Some((b, _)) = open {
+        entries.push(region_entry(&lines[b..], None));
+    }
+
+    for (i, e) in entries.iter_mut().enumerate() {
+        e.index = i;
+    }
+    entries
+}
+
+fn region_entry(lines: &[&str], exit: Option<i32>) -> Entry {
+    Entry {
+        index: 0,
+        // the pipeline gitq recorded when it printed, not one read back off a
+        // prompt line
+        command: marked_region_cmd(lines),
+        output: style_lines(lines.iter().map(|s| s.to_string()).collect()),
+        exit_code: exit,
+        source: EntrySource::GitqMark,
+    }
 }
 
 // --- marker path (OSC-133) -----------------------------------------------
@@ -424,6 +521,84 @@ mod tests {
         let raw = "\u{1b}]133;A\u{7}\u{1b}]133;B\u{7}false\u{1b}]133;C\u{7}\u{1b}]133;D;1\u{7}";
         let es = parse_entries(raw);
         assert_eq!(es[0].exit_code, Some(1));
+    }
+
+    // --- gitq's own markers ----------------------------------------------
+
+    use super::super::mark::wrap;
+
+    #[test]
+    fn gitq_marks_give_an_entry_exact_bounds_and_a_real_exit_code() {
+        // the heuristic would hand the whole group to the entry; the markers
+        // narrow it to precisely what gitq printed
+        let raw = format!(
+            "$ gitq 'commits take 1'\n{}stray line after\n",
+            wrap("i1", None, Some(0), "abc123 first commit\n")
+        );
+        let es = parse_entries(&raw);
+        assert_eq!(es.len(), 1);
+        assert_eq!(es[0].source, EntrySource::GitqMark);
+        assert_eq!(es[0].exit_code, Some(0));
+        assert_eq!(text_of(&es[0]), "abc123 first commit\n");
+    }
+
+    #[test]
+    fn an_unmarked_entry_stays_heuristic() {
+        let es = parse_entries("$ ls\na.txt\n");
+        assert_eq!(es[0].source, EntrySource::Heuristic);
+        assert_eq!(es[0].exit_code, None);
+    }
+
+    #[test]
+    fn gitq_only_finds_regions_without_any_prompt() {
+        // no prompt anywhere: the exact path does not need one
+        let raw = format!(
+            "noise\n{}\nmore noise\n{}",
+            wrap("a", None, Some(0), "first result\n"),
+            wrap("b", None, Some(2), "second result\nline two\n")
+        );
+        let es = parse_gitq_regions(&raw);
+        assert_eq!(es.len(), 2);
+        assert_eq!(text_of(&es[0]), "first result\n");
+        assert_eq!(es[0].exit_code, Some(0));
+        assert_eq!(text_of(&es[1]), "second result\nline two\n");
+        assert_eq!(es[1].exit_code, Some(2));
+        assert_eq!(es[1].index, 1);
+    }
+
+    #[test]
+    fn a_region_whose_end_marker_was_evicted_still_yields_output() {
+        // history-limit eviction truncates the tail, losing the end marker
+        let full = wrap("z", None, Some(0), "kept line\ncut line\n");
+        let truncated: String = full.lines().next().unwrap().to_string();
+        let es = parse_gitq_regions(&truncated);
+        assert_eq!(es.len(), 1);
+        assert_eq!(es[0].exit_code, None, "an absent end marker is not exit 0");
+        assert_eq!(text_of(&es[0]), "kept line\n");
+    }
+
+    #[test]
+    fn gitq_only_on_a_buffer_with_no_markers_is_empty_not_everything() {
+        assert!(parse_gitq_regions("$ ls\na.txt\nb.txt\n").is_empty());
+    }
+
+    #[test]
+    fn mismatched_marker_ids_do_not_close_a_region() {
+        // an interleaved end from a different invocation must not truncate
+        let raw = "\u{1b}]8;;gitq:b;aa\u{1b}\\X\nmiddle\n\u{1b}]8;;gitq:e;bb\u{1b}\\Y\ntail\n";
+        let es = parse_gitq_regions(raw);
+        assert_eq!(es.len(), 1);
+        // ran to the end rather than closing on the foreign id
+        assert!(text_of(&es[0]).contains("tail"));
+    }
+
+    #[test]
+    fn markers_never_leak_into_the_visible_output() {
+        let raw = wrap("i", None, Some(0), "On branch main\n");
+        let es = parse_gitq_regions(&raw);
+        let t = text_of(&es[0]);
+        assert_eq!(t, "On branch main\n");
+        assert!(!t.contains('\u{1b}'), "escape leaked into entry text");
     }
 
     #[test]
