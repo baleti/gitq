@@ -261,7 +261,7 @@ coherence, diff parsing, rendering, completion); =tools/corpus.txt= plus
 =tools/fixture.sh= drive the built binary over a real repository and check
 the whole CLI surface, including an A/B of the two git backends.  Emacs
 integration in =integrations/emacs/gitq.el=; zsh completion in
-=integrations/zsh/_gitq=.
+=integrations/zsh/gitq.zsh=.
 
 =native.rs= is the in-process gix backend.  It builds frames directly —
 there is no serialisation boundary to keep in sync, because there is no

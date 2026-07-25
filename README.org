@@ -93,10 +93,10 @@ build works either way):
 
 Installs to =~/.local/bin= (override with =BINDIR=...=).
 
-The completion installers (=install-zsh=, =install-bash=,
-=install-zsh-scrollback=) *copy* their files rather than symlinking, so an
-installed shell stays working even if the repository is moved or deleted —
-but re-run them after pulling a change to =integrations/=.  The Emacs
+The shell installers (=install-zsh=, =install-bash=) *copy* their files
+rather than symlinking, so an installed shell stays working even if the
+repository is moved or deleted — but re-run them after pulling a change to
+=integrations/=.  The Emacs
 integration needs nothing: it resolves =gitq= on =exec-path=, so =make
 install= is enough.
 
@@ -191,45 +191,53 @@ Emacs's own =ansi-color=.  Add =("integrations/emacs/gitq-scrollback.el")=
 to the recipe =:files= above to load it too; it needs a tmux session but
 no zsh integration.
 
-* Zsh completion
+* Zsh integration
 
-Entirely per-user — completions live in any directory on your =$fpath=,
-no root or system paths involved:
+One file, one line in =~/.zshrc=, no plugin dependencies:
 
 #+begin_src sh
   cd ~/gitq && make install-zsh
 #+end_src
 
-If your shell already has a writable =$HOME= directory on =$fpath=
-(oh-my-zsh, zinit, antidote, and friends all add one), the link goes
-there and *no zshrc changes are needed* — just refresh the completion
-cache (=rm -f ~/.zcompdump && exec zsh=).  Stock zsh has no per-user
-fpath directory, so in that case the link goes to the XDG data dir
-(=~/.local/share/zsh/completions= — completion functions are data,
-mirroring the system =site-functions= convention, no new dotfile
-directory in =$HOME=) and the installer prints the two required
-=~/.zshrc= lines:
+That copies [[file:integrations/zsh/gitq.zsh][integrations/zsh/gitq.zsh]] into
+=~/.local/share/gitq/= and prints the single line to add:
 
 #+begin_src sh
-  fpath=(~/.local/share/zsh/completions $fpath)
-  autoload -Uz compinit && compinit
+  source ~/.local/share/gitq/gitq.zsh
 #+end_src
 
-Override the destination with =make install-zsh ZSH_COMP_DIR=...= —
-e.g. =$ZDOTDIR/completions= if you keep zsh config under
-=~/.config/zsh=.
+*Position does not matter* — before or after =compinit=, before or after
+fzf-tab or any other TAB-binding plugin, anywhere in the file.  Everything
+order-sensitive (registering the completion, capturing the previous =TAB=
+binding, binding keys) is deferred to the first prompt, by which point the
+rest of your config has finished loading.  Override the destination with
+=make install-zsh ZSH_DIR=...=.
 
-Completion inside the pipeline argument delegates to =gitq --complete=, so
-zsh, Emacs, and the parser always agree on what is valid where.
+Note it is *not* installed onto =$fpath=.  An fpath directory means
+autoload: =compinit= scans it for =#compdef= files and never sources
+anything, so the previous layout left the widget files installed, on fpath,
+and silently inert.  This file is neither a completion function nor an
+autoloadable function — it is configuration to be sourced.
 
-** Interactive completer (TAB)
+It can equally be autoloaded from an =$fpath= directory, since a sourced
+file and an autoloaded function body execute identically:
 
-[[file:integrations/zsh/gitq-complete.zsh][integrations/zsh/gitq-complete.zsh]] rebinds =TAB= to gitq's own columnar
-completer (=gitq --complete-tui=) *for gitq command lines only* — every
-other command keeps whatever =TAB= already did, so it sits alongside
-fzf-tab rather than replacing it.  Fuzzy-filtered *miller columns* on the
-left and a wide live preview of the pipeline the highlighted candidate
-would produce on the right:
+#+begin_src sh
+  ln -s ~/.local/share/gitq/gitq.zsh ~/.local/share/zsh/site-functions/gitq-setup
+  autoload -Uz gitq-setup && gitq-setup
+#+end_src
+
+The file sets up three things.
+
+** TAB: the interactive completer
+
+=TAB= on a =gitq= command line opens gitq's own columnar completer
+(=gitq --complete-tui=); every *other* command keeps whatever =TAB= already
+did, captured at the first prompt — so it sits alongside fzf-tab rather
+than replacing it, and needs it just as little.
+
+Fuzzy-filtered *miller columns* on the left and a wide live preview of the
+pipeline the highlighted candidate would produce on the right:
 
 - type to fuzzy-filter the active column; =↵= accepts and puts the pipeline
   on the command line; =Esc= / =^C= cancel.
@@ -242,41 +250,40 @@ would produce on the right:
   through =diff.hunks=, …), so you drill from a query's results into a new
   query rooted at one of them.  Same object-graph walk as the Emacs
   =gitq-results-refine= =TAB=, and the same anchoring grammar.
+- =M-x= opens a command palette for actions that are not part of a pipeline
+  — currently =scrollback-browse=.  Pipeline steps deliberately stay in the
+  columns, where they get the preview and the =Tab= flow.
 
 Like fzf's widgets it draws on =/dev/tty= and needs no tmux, and the
 preview never applies a terminal (highlighting =/remove= shows what it
 would touch and changes nothing).
 
-#+begin_src sh
-  cd ~/gitq && make install-zsh-complete
-#+end_src
+** M-b / M-e: scrollback widgets
 
-The installer prints the one =source= line to add to =~/.zshrc= — *after*
-fzf-tab, so the fall-through for non-gitq commands picks up fzf-tab's
-binding.  It reuses the same =--complete=/=--preview= machinery as
-everything else, so it can't drift from the language either.
-
-** Scrollback widgets
-
-[[file:integrations/zsh/gitq-scrollback.zsh][integrations/zsh/gitq-scrollback.zsh]] adds two ZLE widgets over the
-scrollback subsystem (both need tmux):
+Both need tmux:
 
 - =\eb= (Meta-b) browses the current pane's scrollback in an interactive
   entry browser, overlaid with =tmux display-popup=.
 - =\ee= (Meta-e) sends the scrollback to Emacs (=emacsclient= →
   =gitq-scrollback-open-from-file=).
 
-#+begin_src sh
-  cd ~/gitq && make install-zsh-scrollback
-#+end_src
-
-Both keys are ordinary =bindkey= bindings you can rebind.  Unlike =_gitq=
-these are *sourced*, not autoloaded, so the installer just prints the one
-=source= line for =~/.zshrc=.  There are deliberately no OSC-133
-shell-integration hooks: tmux consumes those markers, so gitq detects
-command boundaries by prompt heuristics instead (tune with
-=GITQ_SCROLLBACK_PROMPT_REGEX=) — the reasoning, measured against real
+Ordinary =bindkey= bindings you can rebind.  There are no OSC-133
+shell-integration hooks and no prompt modification: gitq marks its *own*
+output invisibly as it prints, so those boundaries are exact
+(=gitq --scrollback --gitq-only=).  Splitting the scrollback of *other*
+commands still infers prompts — best-effort, tunable with
+=GITQ_SCROLLBACK_PROMPT_REGEX= — and the reasoning, measured against real
 tmux, is in [[file:doc/scrollback.org][doc/scrollback.org]].
+
+** Menu completion
+
+Completion inside the pipeline argument delegates to
+=gitq --complete-annotated=, which adds the registry's own kind and
+description for each candidate so the menu groups them without keeping its
+own copy of the grammar.  zsh, Emacs and the parser therefore always agree
+on what is valid where.  This needs =compinit=; if you never run it, menu
+completion is simply absent and the =TAB= TUI still works.
+
 
 * Bash completion
 
