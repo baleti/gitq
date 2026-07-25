@@ -8,7 +8,7 @@
 //!            | "branches" | "tags" | "refs" | "worktrees" | "blobs"
 //! step     ::= "via" MORPHISM-PATH | "where" conditions | "grep" PATTERN
 //!            | "pickaxe" PATTERN ["regex"] | "path" GLOB
-//!            | "pick" FIELD[,...] | "take" N | "skip" N
+//!            | "pick" FIELD[,...] | "[" SELECTORS "]" | "skip" N
 //!            | "first" | "last" | "sort" ["-"]FIELD
 //!            | "context" N [PATTERN] | "in" range-tokens
 //! terminal ::= "/show" | "/copy" | ... (the closed terminal registry)
@@ -132,6 +132,12 @@ pub fn parse_pipeline(input: &str) -> P<Pipeline> {
     })
 }
 
+/// Whether a token is a bracket selection like `[0:10]` or `[-1]`.
+fn is_selection(t: &Token) -> bool {
+    let s = t.text();
+    s.len() >= 2 && s.starts_with('[') && s.ends_with(']')
+}
+
 fn parse_rest(mut toks: &[Token], mut fields: Vec<String>) -> P<(Vec<Step>, Option<Terminal>)> {
     let mut steps = Vec::new();
     loop {
@@ -148,6 +154,20 @@ fn parse_rest(mut toks: &[Token], mut fields: Vec<String>) -> P<(Vec<Step>, Opti
                 steps.extend(new_steps);
                 toks = rest;
                 fields = new_fields;
+            }
+            // A bracket token is positional selection.  It is recognised by
+            // *shape* rather than by a keyword, which is what lets it stay
+            // punctuation — and it can only be read this way here, at step
+            // position: brackets inside a `via` path index a morphism
+            // (`parent[0]`), and brackets inside a value belong to that value
+            // (`regex "^a[0-9]"`), because both are already part of a single
+            // token by the time we get here.
+            other if is_selection(other) => {
+                let body = other.text();
+                let body = &body[1..body.len() - 1];
+                let sels = crate::slice::parse_selectors(body).map_err(ParseError)?;
+                steps.push(Step::Slice(sels));
+                toks = &toks[1..];
             }
             other => {
                 return perr(format!(
@@ -229,7 +249,7 @@ pub fn parse_step<'a>(
             let (conds, rest) = parse_where(toks, &f)?;
             // Gap fix: 0.7.0 let a condition-less `where` through as a
             // keep-everything no-op — the only step that did; pick, sort,
-            // grep and take all errored.  Silently doing nothing is exactly
+            // grep and skip all errored.  Silently doing nothing is exactly
             // what "fail loud" forbids.
             if conds.is_empty() {
                 let got = match toks.first() {
@@ -308,11 +328,6 @@ pub fn parse_step<'a>(
             }
             let new_fields = picked.clone();
             Ok((vec![Step::Pick(picked)], remaining, new_fields))
-        }
-
-        "take" => {
-            let (n, rest) = parse_count(toks, "take")?;
-            Ok((vec![Step::Take(n)], rest, f))
         }
 
         "skip" => {
@@ -411,7 +426,7 @@ fn parse_via(toks: &[Token]) -> P<(Vec<Morphism>, &[Token])> {
     Ok((morphs, rest))
 }
 
-/// Parse a non-negative integer count for take/skip, erroring on tokens
+/// Parse a non-negative integer count for skip, erroring on tokens
 /// like `5x` rather than silently truncating them.
 fn parse_count<'a>(toks: &'a [Token], step_name: &str) -> P<(usize, &'a [Token])> {
     let bad = |got: String| -> P<(usize, &'a [Token])> {
@@ -1099,10 +1114,98 @@ mod tests {
 
     #[test]
     fn counts_reject_non_numbers() {
-        err("commits take", "requires a number");
-        err("commits take abc", "requires a number");
-        err("commits take 5x", "requires a number");
-        assert_eq!(ok("commits take 3").steps, vec![Step::Take(3)]);
+        err("commits skip", "requires a number");
+        err("commits skip abc", "requires a number");
+        err("commits skip 5x", "requires a number");
+        assert_eq!(ok("commits skip 3").steps, vec![Step::Skip(3)]);
+        // `take` is gone: positional selection replaced it
+        err("commits take 3", "expected step keyword");
+    }
+
+    // --- positional selection, and its ambiguity with regex --------------
+
+    #[test]
+    fn selection_parses_as_a_slice_step() {
+        use crate::ast::Sel;
+        assert_eq!(
+            ok("commits [0:3]").steps,
+            vec![Step::Slice(vec![Sel::Range {
+                start: Some(0),
+                stop: Some(3),
+                step: None
+            }])]
+        );
+        assert_eq!(
+            ok("commits [-1]").steps,
+            vec![Step::Slice(vec![Sel::Index(-1)])]
+        );
+    }
+
+    #[test]
+    fn a_comma_inside_brackets_separates_selectors_not_list_items() {
+        use crate::ast::Sel;
+        // the shape a multi-row selection emits; a bare comma would have
+        // ended the token and left `[0` dangling
+        assert_eq!(
+            ok("commits [0:2,4]").steps,
+            vec![Step::Slice(vec![
+                Sel::Range {
+                    start: Some(0),
+                    stop: Some(2),
+                    step: None
+                },
+                Sel::Index(4),
+            ])]
+        );
+    }
+
+    #[test]
+    fn brackets_after_an_unquoted_regex_are_selection_not_regex() {
+        // the disambiguation rule: whitespace ends the value, so a bracket
+        // token standing on its own is positional selection
+        let p = ok("commits where sha regex ^5 [0:1]");
+        assert_eq!(p.steps.len(), 2);
+        assert!(matches!(p.steps[1], Step::Slice(_)));
+    }
+
+    #[test]
+    fn brackets_inside_a_quoted_value_belong_to_the_value() {
+        // quoting is what makes it literal — no slice step is produced
+        let p = ok(r#"commits where sha regex "^[45]""#);
+        assert_eq!(p.steps.len(), 1);
+        assert!(!matches!(p.steps[0], Step::Slice(_)));
+    }
+
+    #[test]
+    fn brackets_touching_a_value_are_part_of_it_a_regex_character_class() {
+        // no whitespace => one token => a regex character class, which is
+        // what `regex ^5[0-9a-f]` has always meant and must keep meaning
+        let p = ok("commits where sha regex ^5[0-9a-f]");
+        assert_eq!(p.steps.len(), 1);
+        assert!(!matches!(p.steps[0], Step::Slice(_)));
+    }
+
+    #[test]
+    fn a_morphism_index_is_not_read_as_selection() {
+        // brackets inside a `via` path index a morphism; they are consumed
+        // by the path, never by the step dispatcher
+        let p = ok("HEAD via parent[0]");
+        assert!(!p.steps.iter().any(|s| matches!(s, Step::Slice(_))));
+        let p = ok("HEAD via tree.entries[Blob]");
+        assert!(!p.steps.iter().any(|s| matches!(s, Step::Slice(_))));
+    }
+
+    #[test]
+    fn a_dash_range_is_rejected_with_a_message_naming_the_colon_form() {
+        err("commits [20-30]", "':' not '-'");
+    }
+
+    #[test]
+    fn malformed_selections_fail_loud() {
+        err("commits []", "empty selection");
+        err("commits [::0]", "step cannot be 0");
+        err("commits [1:2:3:4]", "start:stop:step");
+        err("commits [abc]", "not a number");
     }
 
     #[test]

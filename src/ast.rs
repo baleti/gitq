@@ -68,7 +68,10 @@ pub enum Step {
     /// Glob.
     Path(String),
     Pick(Vec<String>),
-    Take(usize),
+    /// Positional selection, Python-slice semantics: a union of selectors
+    /// evaluated left to right, so `[0:3,-1]` is "the first three, then the
+    /// last" and `[::-1]` reverses.
+    Slice(Vec<Sel>),
     Skip(usize),
     First,
     Last,
@@ -125,4 +128,20 @@ pub enum Terminal {
     Commit(Option<String>),
     Mark(Option<String>),
     Worktree(Option<String>),
+}
+
+/// One selector inside a [`Step::Slice`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Sel {
+    /// A single position; negative counts from the end.  Out of range is an
+    /// error, as in Python — asking for one specific row that isn't there is
+    /// a mistake, not an empty result.
+    Index(isize),
+    /// `start:stop:step`, each optional.  Half-open and clamping, as in
+    /// Python: `[0:1000]` on ten rows is ten rows, not an error.
+    Range {
+        start: Option<isize>,
+        stop: Option<isize>,
+        step: Option<isize>,
+    },
 }

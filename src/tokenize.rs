@@ -122,6 +122,9 @@ impl std::fmt::Display for TokenizeError {
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric()
         || matches!(c, '-' | '_' | '/' | '~' | '@' | '{' | '}' | '.' | '*' | '+' | '[' | ']')
+        // ':' carries slice selectors ([0:10], [::-1]); it also lets git
+        // revspec syntax through the tokenizer untouched
+        || c == ':'
         // † (parent adjoint)
         || c == '\u{2020}'
 }
@@ -195,6 +198,24 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, TokenizeError> {
                 i = end;
             }
             continue;
+        }
+
+        // A bracket selection is one token, commas and all: `[0:3,7,-2:]`.
+        // Scanned here, before the comma rule, because a comma *inside*
+        // brackets separates selectors rather than list items — and the
+        // bracket run has to survive intact for the parser to recognise it by
+        // shape.  Unclosed brackets fall through to the ordinary word rule,
+        // so `regex ^a[0-9` still reaches the regex engine and its own error.
+        if c == '[' {
+            if let Some(close) = cs[i..].iter().position(|&c| c == ']') {
+                let end = i + close + 1;
+                let body: String = cs[i..end].iter().collect();
+                if !body[1..body.len() - 1].contains(char::is_whitespace) {
+                    out.push(word(&body));
+                    i = end;
+                    continue;
+                }
+            }
         }
 
         if c == ',' {
@@ -392,7 +413,7 @@ mod tests {
     #[test]
     fn unusable_characters_are_an_error_not_a_silent_drop() {
         // 0.7.0 dropped every one of these on the floor.
-        for c in ['%', '&', '!', '?', ':', ';', '(', ')', '#', '$', '='] {
+        for c in ['%', '&', '!', '?', ';', '(', ')', '#', '$', '='] {
             let q = format!("commits where author {c}");
             assert!(
                 tokenize(&q).is_err(),
