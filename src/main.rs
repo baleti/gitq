@@ -56,7 +56,25 @@ fn take_val_flag(args: &mut Vec<String>, f: &str) -> Option<String> {
     }
 }
 
+/// Die quietly when stdout closes early, the way every other Unix tool
+/// does.  Rust masks SIGPIPE at startup and turns the resulting EPIPE into
+/// a panic, so `gitq ... | head` printed a panic message and a backtrace
+/// hint instead of simply stopping.
+#[cfg(unix)]
+fn restore_sigpipe() {
+    // SAFETY: setting a signal disposition to the default is async-signal
+    // safe and is done once, before any threads exist.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_sigpipe() {}
+
 fn main() {
+    restore_sigpipe();
+
     let mut args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--").collect();
 
     if args.is_empty() {
