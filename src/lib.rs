@@ -19,5 +19,6 @@ pub mod parse;
 pub mod registry;
 pub mod render;
 pub mod scrollback;
+pub mod slice;
 pub mod terminal;
 pub mod tokenize;
