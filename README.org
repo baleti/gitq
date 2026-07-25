@@ -227,13 +227,25 @@ zsh, Emacs, and the parser always agree on what is valid where.
 [[file:integrations/zsh/gitq-complete.zsh][integrations/zsh/gitq-complete.zsh]] rebinds =TAB= to gitq's own columnar
 completer (=gitq --complete-tui=) *for gitq command lines only* — every
 other command keeps whatever =TAB= already did, so it sits alongside
-fzf-tab rather than replacing it.  A fuzzy-filtered candidate column on the
-left (with each candidate's registry kind) and a wide live preview of the
-pipeline each candidate would produce on the right; type to filter, =Tab=
-commits the highlighted candidate and moves to the next position (so
-=Tab='ing builds the pipeline one token at a time), =↵= accepts, =⌫= on an
-empty query steps back a token, =Esc= cancels.  Like fzf's widgets it draws
-on =/dev/tty= and needs no tmux.
+fzf-tab rather than replacing it.  Fuzzy-filtered *miller columns* on the
+left and a wide live preview of the pipeline the highlighted candidate
+would produce on the right:
+
+- type to fuzzy-filter the active column; =↵= accepts and puts the pipeline
+  on the command line; =Esc= / =^C= cancel.
+- =Tab= commits the highlighted candidate and opens the next column, so the
+  committed columns stay visible to the left as the pipeline grows one token
+  at a time; =⌫= on an empty query steps back a column.
+- =^L= steps into the preview: the result frames become a selectable list,
+  and =↵= (or =^L= again) *pivots* onto the highlighted one — a fresh column
+  opens anchored on that object (a commit by its SHA, a hunk re-derived
+  through =diff.hunks=, …), so you drill from a query's results into a new
+  query rooted at one of them.  Same object-graph walk as the Emacs
+  =gitq-results-refine= =TAB=, and the same anchoring grammar.
+
+Like fzf's widgets it draws on =/dev/tty= and needs no tmux, and the
+preview never applies a terminal (highlighting =/remove= shows what it
+would touch and changes nothing).
 
 #+begin_src sh
   cd ~/gitq && make install-zsh-complete
