@@ -40,6 +40,11 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
 
+# Only to restore default SIGPIPE handling at startup; already in the tree
+# via crossterm.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [profile.release]
 lto = true
 codegen-units = 1
