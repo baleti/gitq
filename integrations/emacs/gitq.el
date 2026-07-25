@@ -425,6 +425,26 @@ window is restored explicitly.  TRUNCATED is passed to `gitq--render'
     (when (window-live-p previously-selected)
       (select-window previously-selected))))
 
+(defun gitq--preview-message (pipeline-str msg)
+  "Show MSG in the *gitq* buffer as the preview of PIPELINE-STR.
+Used while a pipeline is incomplete: the parser's own explanation says
+what is still missing, which is more useful than a stale result set —
+and unlike a stale set it cannot be misread as this query's answer.
+Matches what the terminal completion preview shows."
+  (let ((previously-selected (selected-window)))
+    (display-buffer
+     (with-current-buffer (get-buffer-create "*gitq*")
+       (let ((inhibit-read-only t))
+         (erase-buffer)
+         (insert (propertize (format "gitq: %s\n\n" pipeline-str)
+                             'face 'font-lock-comment-face))
+         (insert (propertize msg 'face 'error))
+         (goto-char (point-min)))
+       (current-buffer))
+     '(display-buffer-full-frame))
+    (when (window-live-p previously-selected)
+      (select-window previously-selected))))
+
 (defun gitq-results-visit ()
   "Visit the git object at point in the *gitq* buffer."
   (interactive nil gitq-results-mode)
@@ -672,13 +692,22 @@ the history search (previewing the highlighted entry)."
                              (let ((input (funcall get-input)))
                                (unless (equal input last-input)
                                  (setq last-input input)
-                                 (pcase (gitq--preview-frames input)
+                                 (pcase (gitq--try-frames input)
                                    (`(:ok . ,frames)
                                     (let ((total (length frames)))
                                       (gitq--preview-display
                                        (seq-take frames gitq-preview-max-results)
                                        input
-                                       (max 0 (- total gitq-preview-max-results))))))))))))))
+                                       (max 0 (- total gitq-preview-max-results)))))
+                                   ;; A pipeline that does not parse yet used
+                                   ;; to leave the previous preview on screen,
+                                   ;; which reads as "this query produced
+                                   ;; that" — the one thing a live preview
+                                   ;; must never imply.  Show the CLI's own
+                                   ;; message instead; it says what is still
+                                   ;; missing.
+                                   (`(:error . ,msg)
+                                    (gitq--preview-message input msg)))))))))))
               nil t)))
 
 (defun gitq--history-search ()
@@ -840,15 +869,64 @@ already in the list."
     (append (mapcar (lambda (m) (cons (concat "via " (car m)) (cdr m))) morphisms)
             (seq-remove (lambda (s) (equal (car s) "via")) steps))))
 
-(defun gitq--refine-table (moves)
-  "Completion table over MOVES, keeping the binary's registry order."
+(defun gitq--refine-moves-mode-p (string)
+  "Non-nil while STRING is still choosing a whole move.
+A move is offered as one unit (`via diff.hunks'), so the first token is
+completed against the move list; the moment STRING contains whitespace
+the pipeline is growing and per-token completion takes over."
+  (not (string-match-p "[ \t]" string)))
+
+(defun gitq--refine-table (base moves)
+  "Completion table for refining BASE, offering MOVES then growing.
+While the first token is being chosen, completes against MOVES — whole
+continuations, already type-checked against the shape under point.
+Once the tail contains whitespace the query is growing, and completion
+delegates to the same per-token machinery the gitq prompt uses,
+anchored at BASE: after `where' that is the fields of the current
+shape, after `via' the morphisms, and so on.
+
+Without this the refinement prompt was a single step and stopped dead:
+picking `where' left no way to reach the fields, because the move list
+was computed once and never asked the binary anything again."
   (lambda (string predicate action)
-    (if (eq action 'metadata)
-        '(metadata (category . gitq-token)
-                   (display-sort-function . identity)
-                   (cycle-sort-function . identity)
-                   (affixation-function . gitq--affixate))
-      (complete-with-action action (mapcar #'car moves) string predicate))))
+    (cond
+     ((eq action 'metadata)
+      '(metadata (category . gitq-token)
+                 (display-sort-function . identity)
+                 (cycle-sort-function . identity)
+                 (affixation-function . gitq--affixate)))
+     ((eq (car-safe action) 'boundaries)
+      ;; Moves replace the whole tail; growing-pipeline candidates replace
+      ;; only the token being typed.
+      (cons 'boundaries
+            (cons (if (gitq--refine-moves-mode-p string)
+                      0
+                    (- (length string) (length (gitq--current-token string))))
+                  0)))
+     ((gitq--refine-moves-mode-p string)
+      (complete-with-action action (mapcar #'car moves) string predicate))
+     (t
+      (let ((cands (gitq--candidates-for (concat base " " string))))
+        (setq gitq--annotations cands)
+        (complete-with-action action (mapcar #'car cands)
+                              (gitq--current-token string) predicate))))))
+
+(defun gitq--refine-preview-input (base)
+  "The pipeline the refinement minibuffer would produce, for previewing.
+Composes BASE with what has been typed *and* the highlighted candidate,
+since the candidate replaces only the token being completed — previewing
+the candidate alone would drop the rest of the tail."
+  (let* ((contents (minibuffer-contents-no-properties))
+         (cand (and (bound-and-true-p vertico--input)
+                    (fboundp 'vertico--candidate)
+                    (vertico--candidate))))
+    (concat base " "
+            (if (and cand (not (gitq--refine-moves-mode-p contents)))
+                (concat (substring contents 0
+                                   (- (length contents)
+                                      (length (gitq--current-token contents))))
+                        cand)
+              (or cand contents)))))
 
 (defun gitq--refine-prompt (base)
   "Prompt for refining BASE, elided on the left when it is long."
@@ -926,10 +1004,13 @@ whole query is refined instead of a single object."
                    ;; /remove shows the commits it *would* touch.
                    (lambda ()
                      (gitq--attach-preview
-                      (lambda ()
-                        (concat base " " (gitq--minibuffer-selection)))))
+                      (lambda () (gitq--refine-preview-input base))))
+                 ;; Not require-match: the tail grows past the move list
+                 ;; (`where author alice' is no single move), and
+                 ;; `gitq--refine-run' already decides between running the
+                 ;; result and handing it to the gitq prompt.
                  (completing-read (gitq--refine-prompt base)
-                                  (gitq--refine-table moves) nil t)))))))
+                                  (gitq--refine-table base moves) nil nil)))))))
 
 ;;; Entry point
 
