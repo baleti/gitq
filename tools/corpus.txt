@@ -1,0 +1,183 @@
+# Golden corpus for the Haskell -> Rust port.
+#
+# Format: one case per line, "<mode> <query>".
+#   q  run plain and --sexp; compare stdout + exit code
+#   c  run --complete and --complete-annotated; compare stdout
+#   e  error case: compare stderr + exit code (the fail-loud catalogue)
+#
+# A leading ~ on the mode marks an EXPECTED divergence: the port fixes this
+# gap deliberately, so a diff here is the intended change, not a port bug.
+# Everything without ~ must match the 0.7.0 binary byte for byte.
+
+# --- sources -------------------------------------------------------------
+q commits
+q commits take 3
+q commits /count
+q HEAD
+q main
+q feature
+q v1
+q v2
+q branches
+q tags
+q refs
+q blobs
+q worktrees
+q commits in main..feature
+q commits in v1..HEAD
+q commits in HEAD~3..HEAD
+
+# --- morphisms -----------------------------------------------------------
+q HEAD via parent
+q HEAD via parent*
+q HEAD via parent+
+q HEAD via parent[0]
+q HEAD via parent[1]
+q HEAD via parent†
+q HEAD via .parent
+q HEAD via tree
+q HEAD via tree.entries
+q HEAD via tree.entries[Blob]
+q HEAD via tree.entries[Tree]
+q HEAD via tree.blobs
+q HEAD via tree.subtrees
+q HEAD via entries
+q HEAD via diff
+q HEAD via diff.hunks
+q HEAD via diff.lines
+q HEAD via parent.tree
+q HEAD via diff.hunks via commit
+q HEAD via diff.lines via commit
+q blobs via history
+q commits via parent
+
+# --- merge commit: parents-count 2 --------------------------------------
+q commits where parents-count 2
+q commits where parents-count == 2
+q commits where parents-count > 1
+q commits where parents-count <= 1
+q commits where parents-count >= 2
+q commits where parents-count < 2
+
+# --- where: string / sha / date operators -------------------------------
+q commits where author alice
+q commits where author == alice
+q commits where author != alice
+q commits where author regex "^a.*e$"
+q commits where message needle
+q commits where message == "add b"
+q commits where message regex "needle-(alpha|beta)"
+q commits where date 2024-03
+q commits where date after 2024-03-01
+q commits where date before 2024-03-01
+q commits where date within 100000d
+q commits where sha regex "^[0-9a-f]{4}"
+q commits where email example.com
+q commits where author René
+q commits where message café
+
+# --- multiple conditions -------------------------------------------------
+q commits where author alice, parents-count 1
+q commits where author alice, date after 2024-02-01
+
+# --- relational steps ----------------------------------------------------
+q commits sort date
+q commits sort -date
+q commits sort author
+q commits sort -author
+q commits sort sha
+q commits take 2
+q commits skip 2
+q commits first
+q commits last
+q commits take 3 skip 1
+q commits pick sha
+q commits pick sha,author
+q commits pick author,date,message
+q commits path a.txt
+q commits path "*.txt"
+q commits path "*.md"
+
+# --- grep / pickaxe / context -------------------------------------------
+q commits grep needle
+q commits grep "needle-beta"
+q commits pickaxe needle
+q commits pickaxe "needle-beta"
+q commits pickaxe "needle-.*" regex
+q commits grep needle context 2
+q commits grep needle context 1 needle
+q commits via diff.lines where content needle
+q commits pickaxe needle via diff.lines where content needle
+q commits pickaxe needle via diff.hunks where content needle
+q commits via diff.lines where sign +
+q commits via diff.lines where sign -
+
+# --- mid-pipeline in ------------------------------------------------------
+q commits in main..feature /count
+q HEAD via parent* in v1..HEAD
+
+# --- terminals (read-only only; effectful ones would mutate the fixture) --
+q commits /show
+q commits take 2 /show
+q commits /count
+q commits where author alice /count
+q HEAD via diff.hunks /show
+
+# --- gap fixes: worktree status flags were declared but never populated --
+~q worktrees where modified is true
+~q worktrees where staged is true
+~q worktrees where untracked is true
+~q worktrees pick path,modified,staged,untracked
+
+# --- gap fix: standalone hunks morphism ----------------------------------
+~q HEAD via hunks
+
+# --- gap fix: path GLOB directly after where on a path-carrying shape ----
+~q commits via diff.lines where content needle path "*.txt"
+
+# --- fail-loud error catalogue -------------------------------------------
+e
+e commits where
+e commits nonsense
+e commits via nosuchmorphism
+e commits via parent.nosuch
+e commits where nosuchfield alice
+e commits where author >= alice
+e commits where parents-count regex 2
+e commits where date is true
+e commits where modified alice
+e branches via parent
+e commits via tree.entries via parent
+e commits sort
+e commits take
+e commits take abc
+e commits pick
+e commits grep
+e commits context 2
+e commits /nosuchterminal
+e commits /show extra tokens
+e commits where message regex "["
+e commits where author alice extra
+
+# --- completion ----------------------------------------------------------
+c
+c com
+c commits
+c commits w
+c commits where
+c commits where a
+c commits where author
+c commits where author ==
+c commits via
+c commits via p
+c commits via tree.
+c commits sort
+c commits sort -
+c commits /
+c commits /c
+c commits take
+c HEAD via diff.hunks where
+c commits where date
+c commits where date within
+c branches where
+c worktrees where
