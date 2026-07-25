@@ -10,7 +10,8 @@ use gitq::parse::parse_pipeline;
 use gitq::render::{put_utf8, render_frames_sexp, render_frames_text};
 use gitq::scrollback::browse::run_browser;
 use gitq::scrollback::capture::{capture_scrollback, CaptureTarget};
-use gitq::scrollback::entry::{parse_entries_with, DEFAULT_PROMPT_REGEX};
+use gitq::scrollback::entry::{parse_entries_with, parse_gitq_regions, DEFAULT_PROMPT_REGEX};
+use gitq::scrollback::mark;
 use gitq::scrollback::render::{render_entries_sexp, render_entries_text};
 use gitq::terminal::apply_terminal;
 
@@ -33,8 +34,14 @@ Flags:
   --complete      print completion candidates for the given pipeline prefix
   --scrollback        capture the current tmux pane's scrollback and print entries
   --scrollback-browse browse captured scrollback in an interactive TUI
+  --gitq-only         with --scrollback[-browse], show only gitq's own output,
+                      from the invisible markers gitq emitted (exact; no prompts)
   --complete-tui  interactive columnar completer (prints the chosen pipeline)
-  --tmux-target       with --scrollback[-browse], capture a specific tmux pane";
+  --tmux-target       with --scrollback[-browse], capture a specific tmux pane
+
+Environment:
+  GITQ_NO_MARK    set to stop gitq marking its own output in tmux panes
+  GITQ_SCROLLBACK_PROMPT_REGEX  override the prompt heuristic (POSIX ERE)";
 
 fn usage() {
     eprintln!("{USAGE}");
@@ -111,8 +118,9 @@ fn main() {
 
     if args.iter().any(|a| a == "--scrollback-browse") {
         args.retain(|a| a != "--scrollback-browse");
+        let gitq_only = take_flag(&mut args, "--gitq-only");
         let target = take_val_flag(&mut args, "--tmux-target");
-        if let Err(GitqError(msg)) = scrollback_browse(target) {
+        if let Err(GitqError(msg)) = scrollback_browse(gitq_only, target) {
             eprintln!("{msg}");
             exit(1);
         }
@@ -122,8 +130,9 @@ fn main() {
     if args.iter().any(|a| a == "--scrollback") {
         args.retain(|a| a != "--scrollback");
         let sexp = take_flag(&mut args, "--sexp");
+        let gitq_only = take_flag(&mut args, "--gitq-only");
         let target = take_val_flag(&mut args, "--tmux-target");
-        if let Err(GitqError(msg)) = scrollback(sexp, target) {
+        if let Err(GitqError(msg)) = scrollback(sexp, gitq_only, target) {
             eprintln!("{msg}");
             exit(1);
         }
@@ -183,11 +192,13 @@ fn run(sexp: bool, preview: bool, pipeline: &str) -> Result<(), GitqError> {
 
     let display = || {
         if sexp {
+            // never marked: Emacs parses this, and an escape it did not ask
+            // for is a bug, not a feature
             put_utf8(&render_frames_sexp(&frames));
         } else if frames.is_empty() {
-            println!("gitq: (no results) — {pipeline}");
+            put_marked(pipeline, &format!("gitq: (no results) — {pipeline}\n"));
         } else {
-            put_utf8(&render_frames_text(&frames));
+            put_marked(pipeline, &render_frames_text(&frames));
         }
     };
 
@@ -199,6 +210,21 @@ fn run(sexp: bool, preview: bool, pipeline: &str) -> Result<(), GitqError> {
         (false, None) => display(),
     }
     Ok(())
+}
+
+/// Print gitq's own results, invisibly delimited so a later
+/// `gitq --scrollback` can recover exactly where they began and ended.
+///
+/// The markers ride on characters gitq was printing anyway, so this costs no
+/// visible columns, and they are emitted only when stdout is a tmux pane —
+/// a pipe or a redirect gets clean bytes.  See [`mark`].
+fn put_marked(pipeline: &str, text: &str) {
+    if mark::marking_enabled() {
+        // reached only on the success path; failures print to stderr
+        put_utf8(&mark::wrap(&mark::new_id(), Some(pipeline), Some(0), text));
+    } else {
+        put_utf8(text);
+    }
 }
 
 fn capture_target(t: Option<String>) -> CaptureTarget {
@@ -216,9 +242,15 @@ fn prompt_regex() -> String {
 /// Capture the tmux pane's scrollback, split it into entries, and print
 /// them — human-readable, or as Emacs Lisp plists with `--sexp`.  Unlike a
 /// pipeline this needs no git repository; it reads the terminal, not git.
-fn scrollback(sexp: bool, target: Option<String>) -> Result<(), GitqError> {
+fn scrollback(sexp: bool, gitq_only: bool, target: Option<String>) -> Result<(), GitqError> {
     let raw = capture_scrollback(&capture_target(target))?;
-    let entries = parse_entries_with(&prompt_regex(), &raw);
+    // The dump is not itself marked: it would nest a fresh region around
+    // content that is mostly a replay of older ones.
+    let entries = if gitq_only {
+        parse_gitq_regions(&raw)
+    } else {
+        parse_entries_with(&prompt_regex(), &raw)
+    };
     put_utf8(&if sexp {
         render_entries_sexp(&entries)
     } else {
@@ -230,8 +262,12 @@ fn scrollback(sexp: bool, target: Option<String>) -> Result<(), GitqError> {
 /// Capture and launch the interactive entry browser in this terminal.  This
 /// is what the zsh `\eb` widget shells out to (wrapped in `tmux
 /// display-popup`).
-fn scrollback_browse(target: Option<String>) -> Result<(), GitqError> {
+fn scrollback_browse(gitq_only: bool, target: Option<String>) -> Result<(), GitqError> {
     let raw = capture_scrollback(&capture_target(target))?;
-    let entries = parse_entries_with(&prompt_regex(), &raw);
+    let entries = if gitq_only {
+        parse_gitq_regions(&raw)
+    } else {
+        parse_entries_with(&prompt_regex(), &raw)
+    };
     run_browser(entries).map_err(|e| GitqError(format!("gitq: scrollback browser failed: {e}")))
 }
