@@ -540,8 +540,8 @@ impl CompleterState {
                 KeyCode::Char('l') if ctrl => self.enter_preview(),
                 KeyCode::BackTab | KeyCode::Up => self.active_mut().move_sel(-1),
                 KeyCode::Down => self.active_mut().move_sel(1),
-                KeyCode::Char('p') if ctrl => self.active_mut().move_sel(-1),
-                KeyCode::Char('n') if ctrl => self.active_mut().move_sel(1),
+                KeyCode::Char('p' | 'k') if ctrl => self.active_mut().move_sel(-1),
+                KeyCode::Char('n' | 'j') if ctrl => self.active_mut().move_sel(1),
                 KeyCode::Backspace => {
                     if self.active().query.is_empty() {
                         self.pop_column();
@@ -563,15 +563,13 @@ impl CompleterState {
                 KeyCode::Esc => self.focus = Focus::Columns,
                 KeyCode::Enter | KeyCode::Tab => self.pivot(),
                 KeyCode::Char('l') if ctrl => self.pivot(),
-                KeyCode::Up | KeyCode::Char('k') => {
+                // Nothing is typed here, so movement takes the vi and the
+                // readline pair with or without Ctrl — one arm each, rather
+                // than a Ctrl-guarded arm the bare one would shadow.
+                KeyCode::Up | KeyCode::Char('k' | 'p') => {
                     self.preview_sel = self.preview_sel.saturating_sub(1)
                 }
-                KeyCode::Char('p') if ctrl => self.preview_sel = self.preview_sel.saturating_sub(1),
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.preview_sel =
-                        (self.preview_sel + 1).min(self.frames.len().saturating_sub(1))
-                }
-                KeyCode::Char('n') if ctrl => {
+                KeyCode::Down | KeyCode::Char('j' | 'n') => {
                     self.preview_sel =
                         (self.preview_sel + 1).min(self.frames.len().saturating_sub(1))
                 }
@@ -593,13 +591,13 @@ impl CompleterState {
                     KeyCode::Up | KeyCode::BackTab => {
                         self.palette_sel = self.palette_sel.saturating_sub(1)
                     }
-                    KeyCode::Char('p') if ctrl => {
+                    KeyCode::Char('p' | 'k') if ctrl => {
                         self.palette_sel = self.palette_sel.saturating_sub(1)
                     }
                     KeyCode::Down | KeyCode::Tab => {
                         self.palette_sel = (self.palette_sel + 1).min(n.saturating_sub(1))
                     }
-                    KeyCode::Char('n') if ctrl => {
+                    KeyCode::Char('n' | 'j') if ctrl => {
                         self.palette_sel = (self.palette_sel + 1).min(n.saturating_sub(1))
                     }
                     KeyCode::Backspace => {
@@ -790,18 +788,18 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                     n,
                     desc
                 ),
-                "Tab next  ^L preview  M-x cmds  ↵ accept  Esc quit",
+                "Tab next  ^j/^k move  ^L preview  M-x cmds  ↵ accept",
             )
         }
         Focus::Preview => (
             format!("preview {}/{}", st.preview_sel + 1, st.frames.len()),
-            "j/k move  ^L/↵ pivot on selection  Esc back",
+            "^j/^k move  ^L/↵ pivot  Esc back",
         ),
         Focus::Palette => {
             let n = st.palette_rows().len();
             (
                 format!("M-x {}/{}", if n == 0 { 0 } else { st.palette_sel + 1 }, n),
-                "↵ run  ^n/^p move  Esc close palette",
+                "↵ run  ^j/^k move  Esc close palette",
             )
         }
     };
@@ -974,6 +972,76 @@ mod tests {
         assert_eq!(st.columns.len(), 2, "stepped back too far, popped early");
         st.handle(KeyCode::Backspace, KeyModifiers::NONE); // now drop the column
         assert_eq!(st.columns.len(), 1);
+    }
+
+    #[test]
+    fn ctrl_j_and_ctrl_k_move_the_selection() {
+        let mut st = CompleterState::new("commits ");
+        assert!(st.active().filtered.len() > 2);
+        st.handle(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(st.active().selected, 1);
+        st.handle(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(st.active().selected, 2);
+        st.handle(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(st.active().selected, 1);
+        // and they must not be typed into the query
+        assert_eq!(st.active().query, "");
+    }
+
+    #[test]
+    fn movement_in_the_drilled_preview_works_with_and_without_ctrl() {
+        // regression: the bare j/k arms shadowed the Ctrl ones entirely, so
+        // ^j/^k did nothing here
+        let mut st = CompleterState::new("commits ");
+        st.frames = vec![commit_frame("aaaa"), commit_frame("bbbb")];
+        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(st.focus, Focus::Preview);
+        st.handle(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(st.preview_sel, 1, "^j did not move in the preview");
+        st.handle(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(st.preview_sel, 0, "^k did not move in the preview");
+        st.handle(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(st.preview_sel, 1, "bare j stopped working");
+    }
+
+    #[test]
+    fn ctrl_j_and_ctrl_k_move_in_the_palette_too() {
+        let mut st = CompleterState::new("commits ");
+        let (c, m) = alt('x');
+        st.handle(c, m);
+        st.handle(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(st.palette_sel, st.palette_rows().len() - 1);
+        st.handle(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(st.palette_sel, 0);
+        assert_eq!(st.palette_query, "", "^j/^k leaked into the filter");
+    }
+
+    #[test]
+    fn ctrl_l_drills_the_preview_and_pivots_onto_the_selected_frame() {
+        let mut st = CompleterState::new("commits ");
+        // stand in a known preview rather than depend on the repo's frames
+        st.frames = vec![commit_frame("cafef00d")];
+        st.message = None;
+        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(st.focus, Focus::Preview);
+        st.handle(KeyCode::Enter, KeyModifiers::NONE); // pivot on the frame
+        assert_eq!(st.focus, Focus::Columns);
+        assert_eq!(st.active().prefix, "cafef00d ");
+    }
+
+    #[test]
+    fn enter_accepts_the_active_effective_pipeline() {
+        let mut st = CompleterState::new("comm");
+        st.handle(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(st.accepted.as_deref(), Some("commits"));
+    }
+
+    #[test]
+    fn drilling_an_empty_preview_is_a_no_op() {
+        let mut st = CompleterState::new("commits ");
+        st.frames.clear();
+        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(st.focus, Focus::Columns);
     }
 
     // --- M-x palette ------------------------------------------------------
