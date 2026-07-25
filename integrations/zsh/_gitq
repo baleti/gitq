@@ -16,33 +16,81 @@
 #   per line.  This way the completion logic lives in the gitq binary itself
 #   and is shared with the Emacs integration.
 
-_gitq() {
-  # Only complete the first (pipeline) argument.
-  if (( CURRENT != 2 )); then
-    return 1
-  fi
+# Work out what to complete, from the words before the cursor and the
+# partial word under it.
+#
+# gitq accepts its pipeline either as one quoted argument
+# (`gitq 'commits wh<TAB>'`) or as plain unquoted words
+# (`gitq commits wh<TAB>`) — main.rs simply joins argv with spaces.  Only
+# the quoted form used to complete, because this function bailed out unless
+# the cursor was on argument 2; `gitq commits <TAB>` sat on argument 3 and
+# silently did nothing.
+#
+# Sets three globals, so it can be tested without a completion system:
+#   _gitq_head     already-complete pipeline text, with a trailing space
+#   _gitq_partial  the token being completed
+#   _gitq_inword   the part of the CURRENT word that precedes the token
+#                  (an opening quote, and any earlier tokens sharing the
+#                  word) — this is what has to move into IPREFIX
+_gitq_compute_prefix() {
+  local -a prior
+  prior=("${(@)words[2,CURRENT-1]}")
 
-  # PREFIX = everything the user has typed so far for this argument.
-  # We split it to separate the partial word from the already-complete prefix.
-  local -a typed_words
-  typed_words=("${(z)PREFIX}")       # (z) splits respecting shell quoting
+  # Words completed in earlier argv positions (the unquoted form).  Strip a
+  # wrapping quote from each so gitq's tokenizer sees the pipeline itself.
+  local w head=""
+  for w in "${prior[@]}"; do
+    w="${w#[\"\']}"
+    w="${w%[\"\']}"
+    [[ -n "$w" ]] && head+="$w "
+  done
 
-  local partial=""
-  local before=""
+  # Now split the current word.  In the quoted form this holds the whole
+  # pipeline typed so far; in the unquoted form it is just one token.
+  local cur="$PREFIX" qlead=""
+  case "$cur" in
+    \'*) qlead="'"; cur="${cur#\'}" ;;
+    \"*) qlead='"'; cur="${cur#\"}" ;;
+  esac
 
-  if [[ ${#typed_words[@]} -gt 0 ]]; then
-    partial="${typed_words[-1]}"
-    if [[ ${#typed_words[@]} -gt 1 ]]; then
-      typed_words[-1]=()
-      before="${(j: :)typed_words} "
+  local -a typed
+  typed=("${(z)cur}")               # (z) splits respecting shell quoting
+
+  local partial="" inword=""
+  if (( ${#typed[@]} > 0 )); then
+    # A trailing space means the last token is finished and we are starting
+    # a new, empty one.
+    if [[ "$cur" == *[[:space:]] ]]; then
+      inword="$cur"
+    else
+      partial="${typed[-1]}"
+      if (( ${#typed[@]} > 1 )); then
+        typed[-1]=()
+        inword="${(j: :)typed} "
+      fi
     fi
   fi
 
-  # Tell zsh that IPREFIX (the non-completing prefix) is `before`,
-  # and PREFIX (the part we're replacing) is `partial`.
-  IPREFIX+="$before"
-  PREFIX="$partial"
+  _gitq_head="$head"
+  _gitq_partial="$partial"
+  _gitq_inword="$qlead$inword"
+  _gitq_full="$head$inword$partial"
+}
+
+_gitq() {
+  # Only the pipeline is completed; there are no other arguments.
+  (( CURRENT < 2 )) && return 1
+
+  local _gitq_head _gitq_partial _gitq_inword _gitq_full
+  _gitq_compute_prefix
+
+  # Tell zsh that IPREFIX (the non-completing prefix) is everything before
+  # the token, and PREFIX (the part being replaced) is the token itself.
+  IPREFIX+="$_gitq_inword"
+  PREFIX="$_gitq_partial"
   SUFFIX=""
+
+  local full_prefix="$_gitq_full"
 
   # Ask gitq for candidates given everything typed so far (before + partial).
   local full_prefix="${before}${partial}"
