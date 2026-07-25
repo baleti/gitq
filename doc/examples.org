@@ -19,7 +19,7 @@ same frames as plain text.
   $ gitq 'commits /count'
   5
 
-  $ gitq 'commits take 3'
+  $ gitq 'commits [0:3]'
   27d45ac6  claude                2026-07-09  docs(gitq): README and the design doc, adapted from git-branch-off
   e35abf67  claude                2026-07-09  feat(zsh): completion, carried over from git-branch-off
   ec015b4e  claude                2026-07-09  feat(emacs): gitq.el — Emacs front-end over the gitq binary
@@ -95,7 +95,7 @@ parse identically.
   integrations/emacs/gitq.el
   integrations/zsh/_gitq
 
-  $ gitq 'blobs path "doc/*" via history take 3'       # commits that touched doc/
+  $ gitq 'blobs path "doc/*" via history [0:3]'       # commits that touched doc/
   27d45ac6  claude                2026-07-09  docs(gitq): README and the design doc, adapted from git-branch-off
 #+end_example
 
@@ -111,7 +111,7 @@ tools — and they compose.
 ** "Which commits SAY something?" — =where message=
 
 #+begin_example
-  $ gitq 'commits where message "registry" take 2'
+  $ gitq 'commits where message "registry" [0:2]'
   eb62630d  claude                2026-07-09  test(gitq): port the grammar, fail-loud, and registry suites (243 checks)
 #+end_example
 
@@ -121,7 +121,7 @@ In Emacs, =RET= on a result opens the commit in Magit
 ** "What does a file CONTAIN at some commit?" — =grep=
 
 #+begin_example
-  $ gitq 'HEAD grep "morphism_requires" take 3'
+  $ gitq 'HEAD grep "morphism_requires" [0:3]'
   doc/gitq.org:67: - =morphism_requires= — the field its input shape must carry (its *domain*),
   doc/gitq.org:160:   and codomain to =morphism_requires=/=morphism_yields=, its surface form to
   src/Gitq/Complete.hs:82:   Right (m : _) -> Just (morphism_requires (m :: Morphism))
@@ -129,7 +129,7 @@ In Emacs, =RET= on a result opens the commit in Magit
 
 =grep= searches the full blob content of every commit flowing into it and
 returns one frame per matching line.  Works on any commit set:
-=commits take 20 grep /TODO|FIXME/= greps twenty commits' trees (one frame
+=commits [0:20] grep /TODO|FIXME/= greps twenty commits' trees (one frame
 per commit×line, so narrow the commit set first — it runs =git grep= once
 per commit).  Patterns: ="literal"= or =/regex/=.
 
@@ -177,7 +177,7 @@ the repo.
 ** "Which FILES did matching commits change?" — =diff= + =pick=
 
 #+begin_example
-  $ gitq 'commits where message regex /^feat/ take 2 via diff pick path'
+  $ gitq 'commits where message regex /^feat/ [0:2] via diff pick path'
   path:integrations/zsh/_gitq
   path:integrations/emacs/gitq.el
 #+end_example

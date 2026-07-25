@@ -532,7 +532,7 @@ mod tests {
         // the heuristic would hand the whole group to the entry; the markers
         // narrow it to precisely what gitq printed
         let raw = format!(
-            "$ gitq 'commits take 1'\n{}stray line after\n",
+            "$ gitq 'commits [0:1]'\n{}stray line after\n",
             wrap("i1", None, Some(0), "abc123 first commit\n")
         );
         let es = parse_entries(&raw);

@@ -6,7 +6,7 @@ composing small, typed operations, and end the pipeline with what should
 happen to the result.
 
 #+begin_example
-  gitq 'commits where author alice take 5 /show'
+  gitq 'commits where author alice [0:5] /show'
   gitq 'HEAD via parent* where message "fix" /count'
   gitq 'commits pickaxe "some-function" first /worktree'
   gitq 'HEAD via tree.entries.history sort -date first /copy'
@@ -16,9 +16,22 @@ A pipeline is =source [step...] [/terminal]=: a source produces typed frames
 (=commits=, =branches=, =tags=, =refs=, =worktrees=, =blobs=, =HEAD=, any
 ref), steps transform them (=via= morphism paths like
 =parent[0].tree.entries[Blob]= compose and type-check segment by segment;
-=where= / =sort= / =pick= / =take= / =grep= / =pickaxe= behave as their
+=where= / =sort= / =pick= / =grep= / =pickaxe= behave as their
 SQL/PRQL/jq counterparts), and a =/terminal= acts on the result (=/show=
 =/copy= =/count= =/branch-off= =/reword= =/remove= =/worktree= ...).
+
+Positional selection uses Python's slicing, written as a bracket step:
+=[0:10]= the first ten, =[-1]= the last, =[::-1]= reversed, =[::2]= every
+other one, and — beyond what Python spells — =[0:3,7,-2:]= a union of
+selectors, evaluated left to right.  Ranges are half-open and clamp
+(=[0:1000]= on ten results is ten results); a bare index that does not
+exist is an error, as in Python.  It replaces =take=.
+
+Brackets are punctuation, so their reading depends on where they sit:
+whitespace ends a value, which makes =where sha regex ^5 [0:1]= a
+selection, while =regex "^5 [0:1]"= is quoted and =regex ^5[0-9]= is one
+token — both still character classes.  Inside a =via= path they index a
+morphism (=parent[0]=, =tree.entries[Blob]=) as they always have.
 
 Everything is validated at parse time against the frame shape actually
 flowing through the pipeline — unknown fields, operators that don't fit a
