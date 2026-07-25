@@ -17,7 +17,7 @@ own renderers, exactly as the main pipeline keeps one typed record per
 #+begin_example
   gitq --scrollback                 # print parsed entries (human)
   gitq --scrollback --sexp          # print entries as Emacs Lisp plists
-  gitq --scrollback-browse          # interactive entry browser (brick TUI)
+  gitq --scrollback-browse          # interactive entry browser (ratatui TUI)
 #+end_example
 
 * Why tmux, and What Degrades Without It
@@ -55,33 +55,119 @@ preserves OSC sequences the way it preserves SGR. **Measurement against
 real tmux 3.5a disproves that assumption**, and the design here follows
 the measurement (see the project's "verify empirically" rule):
 
-| Sequence in the pane            | Survives =capture-pane -e=? |
-|---------------------------------+-----------------------------|
-| SGR (=ESC [ … m=)               | yes (re-emitted, see below) |
-| OSC 8 hyperlink (=ESC ] 8 ; …=) | yes, if anchored to a cell  |
-| OSC 133 (shell integration)     | *no* — tmux consumes it     |
-| OSC 1337 / 52 / private OSC     | *no* — stripped             |
+| Sequence in the pane            | Survives =capture-pane -e=?     |
+|---------------------------------+---------------------------------|
+| SGR (=ESC [ … m=)               | yes (re-emitted, see below)     |
+| OSC 8 hyperlink (=ESC ] 8 ; …=) | yes, if anchored to a real cell |
+| OSC 8, *zero-width*             | *no* — dropped                  |
+| OSC 133 (shell integration)     | not in the text; *indexed* — below |
+| OSC 1337 / 52 / private OSC     | *no* — stripped                 |
 
-tmux interprets OSC 133 for its own pane bookkeeping and does not put it
-back into a grid capture; only per-cell attributes (SGR, and the OSC-8
-hyperlink attribute) round-trip. A zero-width OSC-8 hyperlink is dropped
-too, so there is *no* fully-invisible marker channel that survives a tmux
-capture.
+Only per-cell attributes (SGR, and the OSC-8 hyperlink attribute)
+round-trip as *text*. A zero-width OSC-8 hyperlink is dropped.
 
-Two consequences shape the implementation:
+** Correction: an invisible channel does exist
 
-1. *Heuristic prompt detection is the real primary path* under tmux, not
-   a fallback. It splits the buffer on lines that look like a shell
-   prompt. Ship a reasonable default regex, override with
-   =GITQ_SCROLLBACK_PROMPT_REGEX= (a POSIX ERE). This is best-effort by
-   nature — documented as such.
+An earlier revision of this document concluded from the zero-width result
+that "there is no fully-invisible marker channel that survives a tmux
+capture", and made heuristic prompt detection the primary mechanism on
+that basis. *That conclusion was wrong*, and the error was testing only
+the zero-width form.
 
-2. *Exact exit codes need an out-of-band channel*, since the in-band
-   OSC-133 approach is gone. This is a genuine UX fork (a visible OSC-8
-   anchor vs. a sideband journal file written by the shell hooks) and is
-   left as a follow-up decision rather than guessed at. Until then,
-   entries from the heuristic path carry =Nothing= for the exit code and
-   are honest about it.
+A hyperlink anchored to a **space**, or better to a character the program
+was printing anyway, is simultaneously non-zero-width (so tmux keeps it)
+and has no glyph of its own to render (so it is invisible). Measured on
+tmux 3.5a, all of the following survive a capture and are invisible:
+
+| Channel                            | Payload                  |
+|------------------------------------+--------------------------|
+| OSC-8 anchored to a printed char   | arbitrary string         |
+| foreground colour on a space       | ~8 bits (24 truecolour)  |
+| underline colour (SGR 58) on space | ~8 bits                  |
+
+Markers also survive being scrolled out of the visible grid into history,
+which is what makes them usable at all.
+
+gitq uses the first of these to mark *its own* output — see
+[[*Self-Marking: gitq Delimits Its Own Output][Self-Marking]] below.
+
+** Correction: tmux does not discard OSC 133, it indexes it
+
+tmux consumes OSC 133 from the text, but not into the void: it maintains
+a per-line prompt index and exposes it through copy-mode, which is how
+=next-prompt= / =previous-prompt= work. It is queryable from outside:
+
+#+begin_example
+  tmux copy-mode -t PANE
+  tmux send-keys -t PANE -X history-top
+  tmux send-keys -t PANE -X next-prompt
+  tmux display-message -p -t PANE '#{copy_cursor_y}'   # line of that prompt
+  tmux display-message -p -t PANE '#{copy_cursor_line}'
+#+end_example
+
+Measured caveat, and the reason gitq does not currently build on this:
+the marker must be emitted from inside =PROMPT= (wrapped in zsh's
+zero-width =%{…%}=). OSC 133 printed from a =precmd=/=preexec= hook is
+*not* indexed, because zle redraws the prompt line on every keystroke and
+clears the row tmux had flagged; only something re-emitted as part of the
+prompt itself survives that. Measured: =PROMPT=-embedded → 4/4 prompts
+indexed; hook-emitted → 0.
+
+So an exact, whole-session split of *every* command remains available,
+but its price is modifying the user's prompt. That is a live decision,
+not a technical blocker.
+
+** What this leaves the heuristic doing
+
+Prompt detection is still the mechanism for splitting the scrollback of
+commands gitq did not produce (=ls=, =make=, =git=). It splits the buffer
+on lines that look like a shell prompt, ships a default regex, and is
+overridable with =GITQ_SCROLLBACK_PROMPT_REGEX= (a POSIX ERE). It is
+best-effort by nature and documented as such — but it is no longer the
+mechanism for gitq's own output, which is now exact.
+
+* Self-Marking: gitq Delimits Its Own Output
+
+The narrow problem — "which parts of this pane did gitq produce?" — does
+not need boundary *inference* at all, because gitq owns its own stdout.
+Rather than guess from the shape of the terminal, gitq states it.
+
+When gitq prints results and =$TMUX= is set and stdout is a tty, it wraps
+its output in an OSC-8 hyperlink whose URI is a =gitq:= payload, anchored
+to the first and last non-newline characters it was going to print
+anyway. Anchoring to real content rather than to an inserted space means
+marking costs *zero visible columns*: a plain (non-=-e=) capture of
+marked output is byte-identical to unmarked output.
+
+#+begin_example
+  gitq:b;<id>;cmd=<percent-encoded pipeline>     on the first character
+  gitq:e;<id>;exit=<code>                        on the last character
+#+end_example
+
+The =id= pairs the two, so nested or interleaved invocations still match
+up and a region whose end marker was evicted from the history limit is
+detectable (it yields output with an unknown exit code, not a wrong one).
+
+This gives, with *no* shell hooks, *no* =PROMPT= modification and *no*
+prompt regex:
+
+- exact start and end of every gitq region in the pane,
+- the exact pipeline that produced it (gitq records its own argv, rather
+  than reading a prompt line back that may have wrapped or been edited),
+- its exact exit code.
+
+OSC-8 is used rather than OSC-133 deliberately: OSC-133 means "shell
+prompt/command boundary", and emitting it for gitq's output would corrupt
+tmux's prompt index and any real shell integration the user runs. A
+hyperlink is a content attribute and pollutes nothing.
+
+Marking is suppressed when stdout is not a terminal — so =gitq … | jq=,
+=$(gitq …)= and =--sexp= consumed by Emacs all receive clean bytes — and
+can be switched off entirely with =GITQ_NO_MARK=.
+
+#+begin_example
+  gitq --scrollback --gitq-only    # only gitq's own regions, exactly bounded
+#+end_example
 
 ** How SGR comes back
 
@@ -97,28 +183,30 @@ lines within an entry (reset to default at each entry boundary).
 
 All under =src/scrollback/=, plus a =tmux= subprocess:
 
-| Module                    | Responsibility                                   |
-|---------------------------+--------------------------------------------------|
-| =scrollback/capture.rs= | shell out to =tmux capture-pane=, raw =Text= in  |
-| =scrollback/ansi.rs=    | SGR scanner → styled spans; drop non-SGR CSI     |
-| =scrollback/entry.rs=   | =Entry= record + boundary detection              |
-| =scrollback/browse.rs=  | the interactive TUI (brick/vty)                  |
+| Module                  | Responsibility                                    |
+|-------------------------+---------------------------------------------------|
+| =scrollback/capture.rs= | shell out to =tmux capture-pane=, raw text in     |
+| =scrollback/ansi.rs=    | SGR scanner → styled spans; drop non-SGR CSI/OSC  |
+| =scrollback/mark.rs=    | emit and recover gitq's own invisible markers     |
+| =scrollback/entry.rs=   | =Entry= record + boundary detection               |
+| =scrollback/render.rs=  | entries → plain text and =--sexp= plists          |
+| =scrollback/browse.rs=  | the interactive TUI (ratatui/crossterm)           |
 
-=Capture=/=Ansi=/=Entry= need no new dependencies beyond =text=/=process=;
-=Browse= adds =brick= + =vty= (+ =vector=), the one reasonable heavy-dep
+=capture=/=ansi=/=mark=/=entry= need no dependencies beyond =std=;
+=browse= uses =ratatui= + =crossterm=, the one reasonable heavy-dep
 exception, since hand-rolling raw-mode terminal handling is the actual
-reliability risk brick exists to remove.
+reliability risk they exist to remove.
 
 ** =Entry=
 
-#+begin_src haskell
-  data Entry = Entry
-    { entryIndex    :: !Int             -- 0-based, oldest first
-    , entryCommand  :: !(Maybe Text)    -- Nothing if unrecoverable
-    , entryOutput   :: ![[StyledSpan]]  -- styled lines, in order
-    , entryExitCode :: !(Maybe Int)     -- Nothing under the heuristic path
-    , entrySource   :: !EntrySource     -- FromMarkers | FromHeuristic
-    }
+#+begin_src rust
+  pub struct Entry {
+      pub index: usize,                  // 0-based, oldest first
+      pub command: Option<String>,       // None if unrecoverable
+      pub output: Vec<Vec<StyledSpan>>,  // styled lines, in order
+      pub exit_code: Option<i32>,        // None on the heuristic path
+      pub source: EntrySource,           // Markers | Heuristic | GitqMark
+  }
 #+end_src
 
 =parseEntries= picks one strategy for the whole buffer: if OSC-133 markers
@@ -135,8 +223,12 @@ Following the existing =--sexp= / =--complete= flag convention exactly:
 |-------------------------------------------+-----------------------------------------|
 | =gitq --scrollback=                       | capture + parse, human-readable entries |
 | =gitq --scrollback --sexp=                | entries as Emacs Lisp plists            |
-| =gitq --scrollback-browse=                | launch the brick TUI in this terminal   |
+| =gitq --scrollback-browse=                | launch the ratatui TUI in this terminal |
+| =gitq --scrollback --gitq-only=           | only gitq's own regions, exactly bounded |
 | =… --tmux-target TARGET=                  | capture a specific tmux pane            |
+
+=GITQ_NO_MARK= disables self-marking; =GITQ_SCROLLBACK_PROMPT_REGEX=
+overrides the prompt heuristic used for everything gitq did not print.
 
 The =--sexp= plist shape mirrors =render::render_frames_sexp= but is
 written for =Entry=, not routed through the git =Frame= renderer. =:output=
@@ -151,7 +243,7 @@ gitq side; only the TUI needs the parsed =StyledSpan= form.
 
 * The Browser (=--scrollback-browse=)
 
-A brick/vty TUI. Movement is *entry-based*, which is the whole point:
+A ratatui/crossterm TUI. Movement is *entry-based*, which is the whole point:
 
 | Key       | Action                                            |
 |-----------+---------------------------------------------------|
@@ -171,7 +263,7 @@ across entries. Clipboard reuses =terminal.rs='s tool detection.
 
 - *bash / zsh completion*: unchanged model — both delegate to
   =gitq --complete PREFIX=; no grammar duplicated shell-side.
-- *zsh widgets* (=integrations/zsh/gitq-scrollback.zsh=): ZLE widgets bound
+- *zsh widgets* (=integrations/zsh/gitq.zsh=): ZLE widgets bound
   to =\eb= (browse) and =\ee= (send to Emacs), both requiring tmux and
   failing loud via =zle -M= otherwise; browse runs inside
   =tmux display-popup=.
@@ -185,14 +277,20 @@ across entries. Clipboard reuses =terminal.rs='s tool detection.
 
 Shipped (gitq 0.7.0): bash completion; =Capture=, =Ansi=, =Entry=,
 =Render=, and =Browse= modules; the =--scrollback= /
-=--scrollback --sexp= / =--scrollback-browse= CLI; the brick TUI; the
+=--scrollback --sexp= / =--scrollback-browse= CLI; the ratatui TUI; the
 =gitq-scrollback.el= Emacs mode; and the =\eb=/=\ee= zsh widgets — each
 verified against a live tmux pane, real Emacs, and real bash/zsh rather
 than reasoned about in the abstract.
 
-The one deliberate omission is an *exact* command/exit-code channel.
-OSC-133 markers can't provide it under tmux (measured above), so the two
-remaining options — a visible OSC-8-anchored marker, or a sideband
-journal file written by the shell hooks — are a UX trade-off left for the
-maintainer to choose rather than guessed at.  Until then entries from the
-heuristic path carry =Nothing= for the exit code and say so.
+Since then, self-marking (=scrollback/mark.rs=) has closed the exactness
+gap for gitq's *own* output: exact bounds, exact pipeline and exact exit
+code, with no shell integration and no prompt modification, via an
+invisible OSC-8 marker anchored to characters gitq prints anyway. The
+=--gitq-only= flag surfaces it.
+
+What remains best-effort is splitting the scrollback of commands gitq did
+*not* produce; that still uses prompt detection, and entries from that
+path carry =Nothing= for the exit code and say so. Making *those* exact
+is possible — tmux's OSC-133 prompt index is queryable (measured above) —
+but requires embedding a marker in the user's =PROMPT=, which is a UX
+decision rather than a technical one.
