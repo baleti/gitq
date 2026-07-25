@@ -442,15 +442,33 @@ impl CompleterState {
                 self.message = None;
             }
             Err(msg) => {
-                self.frames = Vec::new();
-                self.message = Some(msg);
+                // The highlighted candidate does not form a runnable pipeline
+                // -- `commits ` with `in` highlighted is mid-step, not wrong.
+                // Blanking the preview there loses sight of the very data
+                // being narrowed, so fall back to what the *committed* prefix
+                // produces and keep showing it.
+                //
+                // The fallback is only taken when the prefix itself runs, so a
+                // genuinely instructive error still surfaces: `commits where `
+                // with `sha` highlighted fails, and so does `commits where`,
+                // leaving the original message on screen.
+                let base = self.active().prefix.trim().to_string();
+                match preview_result(&base) {
+                    Ok(frames) if !base.is_empty() => {
+                        self.frames = frames;
+                        self.message = None;
+                    }
+                    _ => {
+                        self.frames = Vec::new();
+                        self.message = Some(msg);
+                    }
+                }
             }
         }
         self.frames_key = key;
         self.preview_sel = 0;
     }
 
-    /// Tab: commit the active token, opening the next column.
     /// Tab: commit the highlighted candidate and advance *this* column.
     ///
     /// It replaces the column in place rather than stacking a new one to the
@@ -1034,6 +1052,30 @@ mod tests {
         let mut st = CompleterState::new("comm");
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.accepted.as_deref(), Some("commits"));
+    }
+
+    #[test]
+    fn the_preview_falls_back_when_the_highlighted_candidate_is_mid_step() {
+        // `commits ` highlights a step like `in`; `commits in` is not runnable,
+        // but the pane should still show what `commits` produces rather than
+        // blanking the very data being narrowed
+        let st = CompleterState::new("commits ");
+        assert!(st.active().highlighted().is_some());
+        assert!(
+            !st.frames.is_empty(),
+            "preview blanked instead of falling back to the committed pipeline"
+        );
+        assert!(st.message.is_none());
+    }
+
+    #[test]
+    fn an_instructive_error_still_shows_when_the_prefix_itself_cannot_run() {
+        // the fallback must not swallow real guidance: `commits where sha`
+        // fails, and so does `commits where`, so the message stays
+        let st = CompleterState::new("commits where ");
+        assert!(st.frames.is_empty());
+        let msg = st.message.expect("the error was swallowed by the fallback");
+        assert!(msg.contains("where"), "{msg}");
     }
 
     #[test]
