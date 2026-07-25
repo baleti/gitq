@@ -68,7 +68,10 @@ with it.  A user-installed binary on PATH always takes precedence, and
 
 ** From source
 
-Requires a Rust toolchain (1.85 or newer).  There is no second toolchain
+Requires a Rust toolchain (1.88 or newer — that floor comes from
+=ratatui=, used by the scrollback browser).  Note that Debian 13 packages
+only 1.85, so =apt install cargo= is not sufficient; use
+[[https://rustup.rs][rustup]].  There is no second toolchain
 and no optional backend flag: the in-process gix backend is a module, so
 one =cargo build= produces the whole thing.
 
