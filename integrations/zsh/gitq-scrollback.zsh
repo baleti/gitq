@@ -10,7 +10,7 @@
 #
 # Both keys are plain `bindkey' bindings you can rebind freely.
 #
-# Install: `make install-zsh-scrollback` symlinks this next to _gitq and
+# Install: `make install-zsh-scrollback` copies this next to _gitq and
 # prints the one `source' line to add to ~/.zshrc.  Source it from shell
 # startup (order doesn't matter — these are widgets, not completion).
 #

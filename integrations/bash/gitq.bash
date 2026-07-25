@@ -1,6 +1,6 @@
 # bash completion for the gitq pipeline CLI.
 #
-# Install: `make install-bash` in the repo root (symlinks this file into
+# Install: `make install-bash` in the repo root (copies this file into
 # ${XDG_DATA_HOME:-~/.local/share}/bash-completion/completions/gitq), or
 # source it from ~/.bashrc:
 #   source /path/to/gitq/integrations/bash/gitq.bash
