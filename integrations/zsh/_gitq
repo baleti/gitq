@@ -90,6 +90,18 @@ _gitq() {
   PREFIX="$_gitq_partial"
   SUFFIX=""
 
+  # fzf-tab (optional): show gitq's completion in a tmux popup with a live
+  # preview of the pipeline it would produce — the terminal counterpart of
+  # the Emacs live preview.  Scoped to :gitq: so nothing else is touched,
+  # and a harmless no-op when fzf-tab isn't installed.  Both styles are
+  # re-set every call: the preview bakes in the pipeline typed so far
+  # (everything up to the token being completed), and the highlighted
+  # candidate ($word) is appended at preview time.  The popup needs tmux;
+  # the preview itself works inline too.
+  local _gitq_pre="${_gitq_full%$_gitq_partial}"
+  zstyle ':fzf-tab:complete:gitq:*' fzf-preview "gitq --preview ${(q)_gitq_pre}\$word 2>&1"
+  [[ -n $TMUX ]] && zstyle ':fzf-tab:complete:gitq:*' fzf-command ftb-tmux-popup
+
   # Ask gitq for candidates given everything typed so far.
   local full_prefix="$_gitq_full"
   local -a annotated
