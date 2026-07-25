@@ -213,19 +213,12 @@ binding, binding keys) is deferred to the first prompt, by which point the
 rest of your config has finished loading.  Override the destination with
 =make install-zsh ZSH_DIR=...=.
 
-Note it is *not* installed onto =$fpath=.  An fpath directory means
-autoload: =compinit= scans it for =#compdef= files and never sources
-anything, so the previous layout left the widget files installed, on fpath,
-and silently inert.  This file is neither a completion function nor an
-autoloadable function — it is configuration to be sourced.
-
-It can equally be autoloaded from an =$fpath= directory, since a sourced
-file and an autoloaded function body execute identically:
-
-#+begin_src sh
-  ln -s ~/.local/share/gitq/gitq.zsh ~/.local/share/zsh/site-functions/gitq-setup
-  autoload -Uz gitq-setup && gitq-setup
-#+end_src
+Note it is *not* installed onto =$fpath=, and must not be put there.  An
+fpath directory means autoload: =compinit= scans it for =#compdef= files
+and never sources anything, so the previous layout left the widget files
+installed, on fpath, and silently inert.  This file is neither a completion
+function nor an autoloadable function — it is configuration to be sourced,
+and sourcing is the only supported setup.
 
 The file sets up three things.
 
