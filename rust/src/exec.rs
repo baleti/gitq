@@ -294,9 +294,19 @@ fn batch_lookup(shas: &[Arc<str>]) -> Vec<Frame> {
         .collect()
 }
 
-/// SHA-keyed commit map for a batch of full SHAs.
+/// SHA-keyed commit map for a batch of full SHAs: the in-process gix
+/// backend when it works, else one subprocess batch.
 fn commit_map_for(shas: &[Arc<str>]) -> BTreeMap<String, Frame> {
-    fetch_commit_map(shas)
+    let mut seen: HashSet<String> = HashSet::new();
+    let uniq: Vec<Arc<str>> = shas
+        .iter()
+        .filter(|s| seen.insert(s.to_string()))
+        .cloned()
+        .collect();
+    match crate::native::native_commits(false, &uniq) {
+        Some(fs) => crate::native::by_sha(fs),
+        None => fetch_commit_map(shas),
+    }
 }
 
 fn tree_of(f: &Frame) -> Option<Frame> {
@@ -466,16 +476,24 @@ fn traverse_parents_star(frames: &[Frame], exclude_start: bool) -> Vec<Frame> {
         return Vec::new();
     }
 
-    let mut input = String::new();
-    for sha in &start_shas {
-        input.push_str(sha);
-        input.push('\n');
-    }
-    let reachable: Vec<Arc<str>> = run_git_stdin(&["rev-list", "--stdin"], &input)
-        .iter()
-        .map(|s| Arc::from(s.as_str()) as Arc<str>)
-        .collect();
-    let cmap = fetch_commit_map(&reachable);
+    // The closure is materialised up front: in process via gix when
+    // available, else in two git processes (`rev-list --stdin` for the SHA
+    // set, one batched log for their frames).
+    let cmap = match crate::native::native_commits(true, &start_shas) {
+        Some(fs) => crate::native::by_sha(fs),
+        None => {
+            let mut input = String::new();
+            for sha in &start_shas {
+                input.push_str(sha);
+                input.push('\n');
+            }
+            let reachable: Vec<Arc<str>> = run_git_stdin(&["rev-list", "--stdin"], &input)
+                .iter()
+                .map(|s| Arc::from(s.as_str()) as Arc<str>)
+                .collect();
+            fetch_commit_map(&reachable)
+        }
+    };
 
     let mut visited: BTreeSet<String> = BTreeSet::new();
     let mut acc: Vec<Frame> = Vec::new();
