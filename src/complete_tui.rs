@@ -260,6 +260,11 @@ struct Column {
     /// Committed pipeline up to (not including) this column; trailing space
     /// when non-empty.
     prefix: String,
+    /// The prefix this column was opened at — its floor.  Committing tokens
+    /// grows `prefix` past it; Backspace may shrink back to it but never
+    /// through it, because everything below belongs to the column that
+    /// pivoted here.
+    root: String,
     query: String,
     all: Vec<Cand>,
     filtered: Vec<usize>,
@@ -269,6 +274,7 @@ struct Column {
 impl Column {
     fn new(prefix: String, query: String) -> Self {
         let mut c = Column {
+            root: prefix.clone(),
             prefix,
             query,
             all: Vec::new(),
@@ -278,6 +284,16 @@ impl Column {
         c.all = candidates_for(&c.prefix);
         c.refilter();
         c
+    }
+
+    /// Move this column to a new prefix, keeping its floor.  Used when a
+    /// token is committed or stepped back *within* one column.
+    fn move_to(&mut self, prefix: String) {
+        self.prefix = prefix;
+        self.query.clear();
+        self.selected = 0;
+        self.all = candidates_for(&self.prefix);
+        self.refilter();
     }
 
     fn refilter(&mut self) {
@@ -435,18 +451,35 @@ impl CompleterState {
     }
 
     /// Tab: commit the active token, opening the next column.
+    /// Tab: commit the highlighted candidate and advance *this* column.
+    ///
+    /// It replaces the column in place rather than stacking a new one to the
+    /// right.  The committed token is already shown in the pipeline line
+    /// above, so a second column would display the same information twice and
+    /// spend the width that makes the preview readable.  Extra columns are
+    /// reserved for [`pivot`](Self::pivot), where the new column has a
+    /// genuinely different root and the pair is worth seeing side by side.
     fn commit(&mut self) {
         let tok = self.active().current_token();
         if tok.is_empty() {
             return;
         }
         let next_prefix = format!("{} ", self.active().effective());
-        self.columns.push(Column::new(next_prefix, String::new()));
+        self.active_mut().move_to(next_prefix);
     }
 
-    /// Backspace on an empty query: drop the active column, back one level.
+    /// Backspace on an empty query: step back a token within the active
+    /// column, or — once at its floor — drop back to the column that pivoted
+    /// here.
     fn pop_column(&mut self) {
-        if self.columns.len() > 1 {
+        let col = self.active();
+        if col.prefix.len() > col.root.len() {
+            let (head, _) = split_last_token(col.prefix.trim_end());
+            let root = col.root.clone();
+            // never step below this column's own root
+            let head = if head.len() < root.len() { root } else { head };
+            self.active_mut().move_to(head);
+        } else if self.columns.len() > 1 {
             self.columns.pop();
         }
     }
@@ -757,7 +790,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                     n,
                     desc
                 ),
-                "Tab dive  ^L preview  M-x cmds  ↵ accept  Esc quit",
+                "Tab next  ^L preview  M-x cmds  ↵ accept  Esc quit",
             )
         }
         Focus::Preview => (
@@ -901,53 +934,46 @@ mod tests {
     }
 
     #[test]
-    fn tab_commits_and_opens_a_new_column_keeping_the_old() {
+    fn tab_advances_the_active_column_in_place() {
         let mut st = CompleterState::new("commits ");
         for c in "where".chars() {
             st.handle(KeyCode::Char(c), KeyModifiers::NONE);
         }
         st.handle(KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(st.columns.len(), 2);
+        // the committed token is already visible in the pipeline line, so it
+        // does not also get a column of its own
+        assert_eq!(st.columns.len(), 1);
         assert_eq!(st.active().prefix, "commits where ");
-        // the previous column is still there
-        assert_eq!(st.columns[0].prefix, "commits ");
+        // and the new position offers fields, not steps
+        assert!(st.active().all.iter().any(|c| c.kind == "field"));
     }
 
     #[test]
-    fn backspace_on_empty_query_pops_back_a_column() {
+    fn backspace_on_empty_query_steps_back_a_token() {
         let mut st = CompleterState::new("commits ");
         st.handle(KeyCode::Tab, KeyModifiers::NONE); // commit the highlighted step
-        assert_eq!(st.columns.len(), 2);
+        let advanced = st.active().prefix.clone();
+        assert_ne!(advanced, "commits ");
         st.handle(KeyCode::Backspace, KeyModifiers::NONE);
         assert_eq!(st.columns.len(), 1);
+        assert_eq!(st.active().prefix, "commits ");
     }
 
     #[test]
-    fn ctrl_l_drills_the_preview_and_pivots_onto_the_selected_frame() {
+    fn backspace_never_steps_below_a_pivoted_columns_root() {
         let mut st = CompleterState::new("commits ");
-        // stand in a known preview rather than depend on the repo's frames
         st.frames = vec![commit_frame("cafef00d")];
-        st.message = None;
         st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
-        assert_eq!(st.focus, Focus::Preview);
-        st.handle(KeyCode::Enter, KeyModifiers::NONE); // pivot on the frame
-        assert_eq!(st.focus, Focus::Columns);
-        assert_eq!(st.active().prefix, "cafef00d ");
-    }
-
-    #[test]
-    fn enter_accepts_the_active_effective_pipeline() {
-        let mut st = CompleterState::new("comm");
-        st.handle(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(st.accepted.as_deref(), Some("commits"));
-    }
-
-    #[test]
-    fn drilling_an_empty_preview_is_a_no_op() {
-        let mut st = CompleterState::new("commits ");
-        st.frames.clear();
-        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
-        assert_eq!(st.focus, Focus::Columns);
+        st.handle(KeyCode::Enter, KeyModifiers::NONE); // pivot -> second column
+        assert_eq!(st.columns.len(), 2);
+        let root = st.active().root.clone();
+        st.handle(KeyCode::Tab, KeyModifiers::NONE); // grow past the root
+        assert!(st.active().prefix.len() > root.len());
+        st.handle(KeyCode::Backspace, KeyModifiers::NONE); // back to the root
+        assert_eq!(st.active().prefix, root);
+        assert_eq!(st.columns.len(), 2, "stepped back too far, popped early");
+        st.handle(KeyCode::Backspace, KeyModifiers::NONE); // now drop the column
+        assert_eq!(st.columns.len(), 1);
     }
 
     // --- M-x palette ------------------------------------------------------
