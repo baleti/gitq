@@ -1,0 +1,45 @@
+[package]
+name = "gitq"
+version = "0.8.0"
+edition = "2021"
+rust-version = "1.85"
+description = "GitQ — a typed query language for git"
+license = "MIT"
+authors = ["baleti"]
+
+[[bin]]
+name = "gitq"
+path = "src/main.rs"
+
+[lib]
+name = "gitq"
+path = "src/lib.rs"
+
+[dependencies]
+# The in-process git backend.  Same feature set the Haskell build's
+# native/ crate settled on after measuring gix against libgit2 (commit
+# 4223006): revwalk with commit-graph support is ~20x libgit2 and beats
+# `git rev-list`.  No default features — gitq only ever reads a local
+# object store, so the ssh/https transports and their openssl build
+# dependency stay out.
+gix = { version = "0.85.0", default-features = false, features = [
+    "revision",
+    "max-performance-safe",
+    "sha1",
+] }
+
+# Leftmost-first, linear-time.  Replaces regex-tdfa's POSIX leftmost-longest
+# semantics — a deliberate deviation, documented in README, on the same
+# footing as the elisp->Haskell switch from Emacs regexp syntax to POSIX ERE.
+regex = "1"
+
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
+# The scrollback browser TUI (was brick/vty).
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+crossterm = "0.29"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
