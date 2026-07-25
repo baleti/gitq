@@ -913,8 +913,23 @@ whole query is refined instead of a single object."
         (user-error "gitq: no further step applies to '%s'" base))
       (gitq--refine-run
        (concat base " "
-               (completing-read (gitq--refine-prompt base)
-                                (gitq--refine-table moves) nil t))))))
+               (minibuffer-with-setup-hook
+                   ;; Preview the move the highlighted candidate would make,
+                   ;; not the literal minibuffer contents — the candidate is
+                   ;; only the tail, so it is completed against BASE to form
+                   ;; the pipeline actually previewed.  Same helper the gitq
+                   ;; prompt and the history search use.
+                   ;;
+                   ;; Effectful terminals are safe to highlight: the preview
+                   ;; runs the CLI with --preview, which identifies a
+                   ;; terminal but never applies it, so scrolling past
+                   ;; /remove shows the commits it *would* touch.
+                   (lambda ()
+                     (gitq--attach-preview
+                      (lambda ()
+                        (concat base " " (gitq--minibuffer-selection)))))
+                 (completing-read (gitq--refine-prompt base)
+                                  (gitq--refine-table moves) nil t)))))))
 
 ;;; Entry point
 
