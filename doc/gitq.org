@@ -185,6 +185,9 @@ fail silently and is now a loud error, each with a regression test:
 - unknown where-operators; operator/field-type mismatches; missing values
 - bare conditions on non-flag fields
 - =pick= with no fields (used to project everything away)
+- =where= with no conditions (used to keep everything, silently — found by
+  the Emacs refinement UI, which offers =where= as a move and must be able
+  to tell "not finished yet" from "runnable")
 - =/delete= (parsed, then fell through to =/show=)
 - =/worktree= (completable and documented, but unparseable)
 - terminals whose backing function isn't loaded

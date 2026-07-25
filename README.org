@@ -146,8 +146,29 @@ behind it are in [[file:doc/scrollback.org][doc/scrollback.org]].
 completion (candidates and annotations come from the binary, so they can
 never drift from the parser), a debounced live preview of results while
 typing, and a results buffer: =RET= visits the object at point (via Magit
-when available), =b= branches off, =c= copies the SHA.  Re-invoking =gitq=
-from a results buffer pre-fills the minibuffer with the query that built it.
+when available), =b= branches off, =c= copies the SHA, =f= / =F= fold hunk
+bodies.  Re-invoking =gitq= from a results buffer pre-fills the minibuffer
+with the query that built it.
+
+=TAB= (or =.=) continues the query *from the object under point*.  The
+minibuffer offers the moves that make sense there — the morphisms whose
+domain that frame's shape satisfies, then the steps and terminals valid
+after it — and a move that already forms a runnable pipeline runs at once,
+so =TAB= after =TAB= walks down git's object graph:
+
+#+begin_example
+  commits where author alice        ← point on one commit
+  TAB via diff.hunks                → a1b2c3… via diff.hunks
+  TAB via history                   → a1b2c3… via diff.hunks where path == "src/parse.rs" … via history
+  TAB where                         → gitq> … where ▮   (needs an argument: back to the prompt)
+#+end_example
+
+The anchor keeps the shape it came from, so the offer is always honest: a
+commit anchors as its bare SHA (nothing upstream is re-run), while a hunk
+is re-derived from its own commit through =diff.hunks= — which is why
+=via commit= and =via history= are the only morphisms offered above.
+Effectful terminals (=/branch-off=, =/commit=, …) always drop into the
+minibuffer for an explicit =RET=; they are never fired by a single =TAB=.
 
 #+begin_src emacs-lisp
 ;; Doom Emacs, packages.el

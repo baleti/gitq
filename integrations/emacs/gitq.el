@@ -3,7 +3,7 @@
 ;; Author: baleti
 ;; URL: https://github.com/baleti/gitq
 ;; Package-Requires: ((emacs "28.1"))
-;; Version: 0.6.1
+;; Version: 0.7.1
 
 ;;; Commentary:
 
@@ -19,6 +19,10 @@
 ;; - a results buffer (`gitq-results-mode') with RET to visit the object
 ;;   at point (via magit when available), `b' to branch off, `c' to copy
 ;;   the SHA, `q' to quit.
+;; - TAB in that buffer refines the query from the object under point:
+;;   the minibuffer offers the morphisms and steps that type-check against
+;;   that object's frame shape, and a complete move runs immediately, so
+;;   repeated TAB walks down git's object graph one level per keystroke.
 ;; - re-invoking `gitq' from a results buffer pre-fills the minibuffer
 ;;   with the pipeline that produced it.
 ;;
@@ -131,14 +135,24 @@ platforms with no published asset and no binary."
     (let ((code (apply #'call-process (gitq--executable) nil (list t nil) nil args)))
       (cons code (buffer-string)))))
 
-(defun gitq--frames (pipeline)
-  "Execute PIPELINE's source and steps (never its terminal); return frames.
-Frames are plists as printed by `gitq --sexp'.  Signals a `user-error'
-with the CLI's message on failure."
+(defun gitq--try-frames (pipeline)
+  "Execute PIPELINE's source and steps (never its terminal).
+Returns (:ok . FRAMES) — plists as printed by `gitq --sexp' — or
+\(:error . MESSAGE) with the CLI's own message.  Callers that want to
+treat \"does not parse yet\" as an answer rather than a failure (the
+live preview, the refinement in `gitq-results-refine') use this
+directly; `gitq--frames' is the signalling wrapper."
   (pcase-let ((`(,code . ,out) (gitq--run "--sexp" "--preview" pipeline)))
     (if (zerop code)
-        (car (read-from-string (concat "(" out ")")))
-      (user-error "%s" (string-trim out)))))
+        (cons :ok (car (read-from-string (concat "(" out ")"))))
+      (cons :error (string-trim out)))))
+
+(defun gitq--frames (pipeline)
+  "Execute PIPELINE's source and steps (never its terminal); return frames.
+Signals a `user-error' with the CLI's message on failure."
+  (pcase (gitq--try-frames pipeline)
+    (`(:ok . ,frames) frames)
+    (`(,_ . ,msg)     (user-error "%s" msg))))
 
 ;;; Results buffer
 
@@ -148,9 +162,11 @@ with the CLI's message on failure."
     (define-key m (kbd "b")   #'gitq-results-branch-off)
     (define-key m (kbd "c")   #'gitq-results-copy-sha)
     (define-key m (kbd "q")   #'quit-window)
-    ;; org-style folding: TAB toggles the hunk at point, S-TAB the buffer.
-    ;; f/F as fallbacks for setups where evil owns TAB in normal state.
-    (define-key m (kbd "TAB")       #'gitq-results-toggle-fold)
+    ;; TAB continues the query from the object at point; `.' is its
+    ;; fallback for setups where evil owns TAB (in terminals TAB = C-i).
+    (define-key m (kbd "TAB")       #'gitq-results-refine)
+    (define-key m (kbd ".")         #'gitq-results-refine)
+    ;; folding: `f' toggles the hunk at point, S-TAB / `F' the whole buffer
     (define-key m (kbd "<backtab>") #'gitq-results-toggle-fold-all)
     (define-key m (kbd "f")         #'gitq-results-toggle-fold)
     (define-key m (kbd "F")         #'gitq-results-toggle-fold-all)
@@ -168,6 +184,30 @@ with the CLI's message on failure."
 Set by `gitq--render' after the major mode is turned on (major modes
 call `kill-all-local-variables', which would otherwise wipe it).")
 
+(defconst gitq--token-regexp "\"[^\"]*\"\\|/[^/ ]*/\\|[^ \t]+"
+  "Regexp matching one pipeline token, quoted values and /regex/ first.
+A rough client-side echo of the binary's tokenizer, used only where
+Emacs needs to look at the shape of a pipeline string it already has
+\(highlighting its search terms, finding its terminal) — never to decide
+what is valid, which is always the binary's answer.")
+
+(defun gitq--terminal-token-p (token)
+  "Return non-nil if TOKEN is a /terminal rather than a value.
+Terminal names are lowercase words with hyphens, so an unquoted
+/regex/ literal or an absolute path glob is not mistaken for one."
+  (and (stringp token) (string-match-p "\\`/[a-z][a-z-]*\\'" token)))
+
+(defun gitq--pipeline-without-terminal (pipeline)
+  "PIPELINE truncated before its terminal, if it has one.
+A terminal ends a pipeline, so it has to go before anything can be
+appended to the query that produced a results buffer."
+  (let ((start 0) (cut nil))
+    (while (and (null cut) (string-match gitq--token-regexp (or pipeline "") start))
+      (setq start (match-end 0))
+      (when (gitq--terminal-token-p (match-string 0 pipeline))
+        (setq cut (match-beginning 0))))
+    (string-trim (if cut (substring pipeline 0 cut) (or pipeline "")))))
+
 (defun gitq--face (magit-face fallback)
   "Return MAGIT-FACE if it is defined, else FALLBACK."
   (if (facep magit-face) magit-face fallback))
@@ -178,7 +218,7 @@ Covers the text the user is searching for: `grep'/`pickaxe' patterns
 and `where' values on the content and message fields.  Quoted and bare
 values are matched literally; /regex/ literals as regexps."
   (let ((tokens nil) (start 0) res)
-    (while (string-match "\"[^\"]*\"\\|/[^/ ]*/\\|[^ \t]+" pipeline start)
+    (while (string-match gitq--token-regexp pipeline start)
       (push (match-string 0 pipeline) tokens)
       (setq start (match-end 0)))
     (setq tokens (nreverse tokens))
@@ -489,18 +529,24 @@ once, at the prompt."
 (defvar gitq--completion-cache nil
   "Cons of (INPUT . CANDIDATES) memoizing the last CLI completion call.")
 
+(defvar gitq--annotations nil
+  "Alist of (CANDIDATE KIND DESCRIPTION) for the completion in progress.
+Both annotators read it, so any gitq prompt — the growing pipeline, the
+refinement moves in `gitq-results-refine' — annotates from whatever
+table it built, without either of them owning the other's cache.")
+
 (defun gitq--candidates-for (string)
   "Candidates (with descriptions) for STRING, memoized per input."
   (unless (equal (car gitq--completion-cache) string)
     (setq gitq--completion-cache
           (cons string (gitq--complete-candidates string))))
-  (cdr gitq--completion-cache))
+  (setq gitq--annotations (cdr gitq--completion-cache)))
 
 (defun gitq--affixate (candidates)
   "Return CANDIDATES as (CAND \"\" DESC) triples for completion UIs.
 The plain fallback used when Marginalia isn't around (see
 `gitq--marginalia-annotate' for the Marginalia version)."
-  (let ((table (cdr gitq--completion-cache)))
+  (let ((table gitq--annotations))
     (mapcar (lambda (c)
               (let ((desc (nth 2 (assoc c table))))
                 (list c ""
@@ -521,7 +567,7 @@ property protocol — the `marginalia--fields' macros are invisible when
 this file is byte-compiled without Marginalia loaded (straight.el
 compiles packages in isolation), which would compile the field specs
 into calls to nonexistent functions."
-  (pcase-let ((`(,_ ,kind ,desc) (assoc cand (cdr gitq--completion-cache))))
+  (pcase-let ((`(,_ ,kind ,desc) (assoc cand gitq--annotations)))
     (when (or kind desc)
       (concat
        (propertize " " 'marginalia--align t)
@@ -692,7 +738,8 @@ Runs the CLI with --preview (a terminal keyword ends the pipeline but
 its action is never applied).  Returns nil, with no side effects, if
 INPUT does not currently parse or execute cleanly."
   (ignore-errors
-    (cons :ok (gitq--frames input))))
+    (pcase (gitq--try-frames input)
+      ((and result `(:ok . ,_)) result))))
 
 (defun gitq--read-pipeline (prompt &optional initial-input)
   "Read a gitq pipeline with completion and a debounced live preview.
@@ -705,17 +752,179 @@ history search over previously-run pipelines."
     (completing-read prompt #'gitq--completion-table nil nil
                      initial-input 'gitq--history)))
 
+;;; Refining from the results buffer
+
+(defun gitq--quote-value (value)
+  "VALUE as a where-condition literal: numbers bare, strings quoted."
+  (if (numberp value) (number-to-string value) (format "%S" value)))
+
+(defun gitq--identity-clause (frame specs)
+  "A `where' clause pinning FRAME, from SPECS of (PROPERTY . FIELD).
+Only properties FRAME actually carries are used, and every condition is
+an equality on a field of that frame's own shape — so the clause always
+type-checks against the frame it was built from."
+  (let (conds)
+    (dolist (spec specs)
+      (when-let ((value (plist-get frame (car spec))))
+        (push (format "%s == %s" (cdr spec) (gitq--quote-value value)) conds)))
+    (when conds
+      (concat "where " (mapconcat #'identity (nreverse conds) ", ")))))
+
+(defun gitq--pinned (base frame specs)
+  "BASE narrowed to FRAME by SPECS, or nil if there is no BASE to narrow."
+  (let ((clause (and specs (gitq--identity-clause frame specs))))
+    (cond ((or (null base) (string-empty-p base)) nil)
+          (clause (concat base " " clause))
+          (t base))))
+
+(defun gitq--derived-anchor (frame morphism specs base)
+  "Re-derive FRAME from its own commit through MORPHISM, pinned by SPECS.
+Falls back to pinning inside BASE for a frame with no owning commit."
+  (if-let ((sha (plist-get frame :commit-sha)))
+      (let ((clause (gitq--identity-clause frame specs)))
+        (concat sha " via " morphism (if clause (concat " " clause) "")))
+    (gitq--pinned base frame specs)))
+
+(defun gitq--frame-anchor (frame pipeline)
+  "A pipeline whose result is just FRAME, to continue the query from.
+PIPELINE is the query that produced the results buffer.
+
+The frame under point decides the anchor, and through it which
+morphisms the binary will accept next — so an anchor has to preserve
+the frame's /shape/, not only its identity:
+
+- a commit or a ref anchors as itself: a bare SHA or ref name is a
+  source in its own right (\"abc123 via diff.hunks\"), and the cheapest
+  one there is — nothing upstream is re-run.
+- a hunk or a diff line is re-derived from its own commit through the
+  morphism that gave it its shape (hunks come from `diff.hunks', diff
+  lines from `diff.lines'), then pinned by path and line.  That keeps
+  the hunk shape — so `via commit' and `via history' stay available —
+  and still avoids re-running everything upstream.
+- anything else (blobs, grep lines, worktrees, projections) has no
+  standalone source form, so it is pinned inside the query it came
+  from, with that query's terminal dropped."
+  (let ((base (gitq--pipeline-without-terminal pipeline)))
+    (pcase (plist-get frame :type)
+      ('commit    (plist-get frame :sha))
+      ('ref       (or (plist-get frame :name) (plist-get frame :sha)))
+      ('hunk      (gitq--derived-anchor
+                   frame "diff.hunks"
+                   '((:path . "path") (:start-line . "start-line")) base))
+      ;; a removed and an added line share a path and a line number, so
+      ;; the sign is part of a diff line's identity
+      ('diff-line (gitq--derived-anchor
+                   frame "diff.lines"
+                   '((:path . "path") (:line-number . "line-number")
+                     (:sign . "sign"))
+                   base))
+      ('blob      (gitq--pinned base frame '((:sha . "sha") (:path . "path"))))
+      ('line      (gitq--pinned base frame '((:commit-sha . "commit-sha")
+                                             (:path . "path")
+                                             (:line-number . "line-number"))))
+      ('worktree  (gitq--pinned base frame '((:path . "path"))))
+      (_          (gitq--pinned base frame nil)))))
+
+(defun gitq--refine-moves (base)
+  "Continuation moves for the pipeline BASE, as (MOVE KIND DESCRIPTION).
+Two questions to the binary and no grammar of our own: the steps and
+terminals valid after BASE, and the morphisms whose domain the current
+frame shape satisfies.  The morphisms come back flattened into whole
+\"via X\" moves — they are the interesting continuations, and each one
+has already been type-checked against the shape under point by the time
+it is offered (from a hunk, for instance, only `via commit' and `via
+history' survive).  `via' itself is dropped: every way to spell it is
+already in the list."
+  (let ((morphisms (gitq--complete-candidates (concat base " via ")))
+        (steps     (gitq--complete-candidates (concat base " "))))
+    (append (mapcar (lambda (m) (cons (concat "via " (car m)) (cdr m))) morphisms)
+            (seq-remove (lambda (s) (equal (car s) "via")) steps))))
+
+(defun gitq--refine-table (moves)
+  "Completion table over MOVES, keeping the binary's registry order."
+  (lambda (string predicate action)
+    (if (eq action 'metadata)
+        '(metadata (category . gitq-token)
+                   (display-sort-function . identity)
+                   (cycle-sort-function . identity)
+                   (affixation-function . gitq--affixate))
+      (complete-with-action action (mapcar #'car moves) string predicate))))
+
+(defun gitq--refine-prompt (base)
+  "Prompt for refining BASE, elided on the left when it is long."
+  (format "%s ▸ "
+          (if (> (length base) 60)
+              (concat "…" (substring base (- (length base) 59)))
+            base)))
+
+(defun gitq--record (pipeline)
+  "Note PIPELINE in the history and the repo it was run from.
+A refinement never passes through the minibuffer, so it has to record
+itself the way `completing-read' would have."
+  (puthash pipeline (gitq--location) gitq--history-locations)
+  (unless (equal (car gitq--history) pipeline)
+    (push pipeline gitq--history)))
+
+(defun gitq--refine-run (pipeline)
+  "Run PIPELINE if the binary can, else hand it to the gitq prompt.
+Whether a refinement is finished is the binary's call rather than a
+second grammar here: a move that already forms a runnable pipeline
+\(`via diff.hunks', `first', `/show') executes straight into the
+results buffer, so repeated refinement walks the object graph one level
+per keystroke, while a move that still wants an argument (`where',
+`take', `grep') simply does not parse yet and lands in the minibuffer
+prefilled, where per-token completion and the live preview take over.
+Effectful terminals always go to the minibuffer: they are confirmed
+with RET, never fired by a single TAB."
+  (if (gitq--effectful-terminal-p pipeline)
+      (gitq (gitq--read-pipeline "gitq> " (concat pipeline " ")))
+    (pcase (gitq--try-frames pipeline)
+      (`(:ok . ,frames)
+       (gitq--record pipeline)
+       (gitq--display frames pipeline))
+      (_ (gitq (gitq--read-pipeline "gitq> " (concat pipeline " ")))))))
+
+(defun gitq-results-refine ()
+  "Continue the query from the object under point, with completion.
+The minibuffer offers the moves that make sense /here/: the morphisms
+whose domain the frame under point satisfies, then the steps and
+terminals valid after it.  Selecting a complete move runs it, so TAB
+after TAB walks down git's object graph — commit, its hunks, the
+history of the file a hunk touches — each result buffer being itself a
+query you can refine again.
+
+With point on a group header the commit that heads the group is the
+anchor; with point on neither (the query line at the top, say) the
+whole query is refined instead of a single object."
+  (interactive nil gitq-results-mode)
+  (gitq--ensure-executable)
+  (let* ((frame (or (get-text-property (point) 'gitq-frame)
+                    (get-text-property (line-beginning-position) 'gitq-frame)))
+         (sha   (or (get-text-property (point) 'gitq-sha)
+                    (get-text-property (line-beginning-position) 'gitq-sha)))
+         (base  (or (and frame (gitq--frame-anchor frame gitq--buffer-pipeline))
+                    sha
+                    (gitq--pipeline-without-terminal gitq--buffer-pipeline))))
+    (when (or (null base) (string-empty-p base))
+      (user-error "gitq: nothing here to refine"))
+    (let* ((moves (gitq--refine-moves base))
+           (gitq--annotations moves))
+      (unless moves
+        (user-error "gitq: no further step applies to '%s'" base))
+      (gitq--refine-run
+       (concat base " "
+               (completing-read (gitq--refine-prompt base)
+                                (gitq--refine-table moves) nil t))))))
+
 ;;; Entry point
 
 (defun gitq--effectful-terminal-p (pipeline)
   "Return non-nil if PIPELINE ends in a terminal other than /show.
 Such pipelines run through the CLI so the effect happens there; /show
 and terminal-less pipelines render into the results buffer instead."
-  (let ((words (split-string pipeline)))
-    (when-let ((last-word (car (last words))))
-      (and (string-prefix-p "/" last-word)
-           (not (string-suffix-p "/" last-word))
-           (not (equal last-word "/show"))))))
+  (when-let ((last-word (car (last (split-string pipeline)))))
+    (and (gitq--terminal-token-p last-word)
+         (not (equal last-word "/show")))))
 
 ;;;###autoload
 (defun gitq (pipeline)
@@ -740,7 +949,7 @@ buffer, the minibuffer is pre-filled with the pipeline that produced it."
                                 (when (derived-mode-p 'gitq-results-mode)
                                   gitq--buffer-pipeline)))))
   (gitq--ensure-executable)
-  (puthash pipeline (gitq--location) gitq--history-locations)
+  (gitq--record pipeline)
   (if (gitq--effectful-terminal-p pipeline)
       (pcase-let ((`(,code . ,out) (gitq--run pipeline)))
         (if (zerop code)
