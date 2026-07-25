@@ -3,7 +3,7 @@
 use std::process::exit;
 
 use gitq::complete::{annotate, complete_candidates};
-use gitq::complete_tui::run_completer;
+use gitq::complete_tui::{run_completer, Outcome, PaletteCommand};
 use gitq::exec::exec_pipeline;
 use gitq::git::{toplevel, GitqError};
 use gitq::parse::parse_pipeline;
@@ -104,10 +104,19 @@ fn main() {
     if args.iter().any(|a| a == "--complete-tui") {
         args.retain(|a| a != "--complete-tui");
         match run_completer(&args.join(" ")) {
-            Ok(Some(pipeline)) => println!("{pipeline}"),
+            Ok(Outcome::Accepted(pipeline)) => println!("{pipeline}"),
+            // A palette command runs only now, with the completer's terminal
+            // already torn down — the browser drives its own.  No pipeline was
+            // chosen, so exit non-zero and leave the command line alone.
+            Ok(Outcome::Command(PaletteCommand::ScrollbackBrowse)) => {
+                if let Err(GitqError(msg)) = scrollback_browse(false, None) {
+                    eprintln!("{msg}");
+                }
+                exit(1);
+            }
             // cancelled: print nothing, exit non-zero so the widget leaves
             // the command line untouched
-            Ok(None) => exit(1),
+            Ok(Outcome::Cancelled) => exit(1),
             Err(e) => {
                 eprintln!("gitq: {e}");
                 exit(1);

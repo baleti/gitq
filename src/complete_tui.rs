@@ -322,10 +322,43 @@ impl Column {
     }
 }
 
+/// A non-pipeline action offered by the `M-x` palette.
+///
+/// Deliberately *not* a home for pipeline steps: those are the columns' job,
+/// where they get the live preview and the Tab-to-commit flow.  The palette
+/// is for things that act on the session rather than on the pipeline being
+/// built, which have nowhere else to live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaletteCommand {
+    ScrollbackBrowse,
+}
+
+/// The palette's contents.  One row per command: what to type, and what it
+/// does.  Grows by adding a line here and a match arm in the caller.
+const PALETTE: &[(&str, &str, PaletteCommand)] = &[(
+    "scrollback-browse",
+    "browse this tmux pane's captured scrollback",
+    PaletteCommand::ScrollbackBrowse,
+)];
+
+/// What the completer finished with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// A pipeline to print to stdout.
+    Accepted(String),
+    /// A palette command for the caller to run once the TUI is torn down —
+    /// the browser drives its own terminal, so it cannot start underneath
+    /// this one.
+    Command(PaletteCommand),
+    Cancelled,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Focus {
     Columns,
     Preview,
+    /// The `M-x` palette, overlaid on the columns.
+    Palette,
 }
 
 struct CompleterState {
@@ -339,7 +372,12 @@ struct CompleterState {
     frames_key: String,
     /// Selection within the preview when `Focus::Preview`.
     preview_sel: usize,
+    /// Filter text and selection for the `M-x` palette.
+    palette_query: String,
+    palette_sel: usize,
     accepted: Option<String>,
+    /// Set when a palette command is chosen; run after the TUI exits.
+    command: Option<PaletteCommand>,
     quit: bool,
 }
 
@@ -353,7 +391,10 @@ impl CompleterState {
             message: None,
             frames_key: String::new(),
             preview_sel: 0,
+            palette_query: String::new(),
+            palette_sel: 0,
             accepted: None,
+            command: None,
             quit: false,
         };
         st.refresh_preview();
@@ -436,10 +477,29 @@ impl CompleterState {
         self.quit = true;
     }
 
+    /// Palette rows matching the current filter, best first.
+    fn palette_rows(&self) -> Vec<&'static (&'static str, &'static str, PaletteCommand)> {
+        let mut scored: Vec<(&'static (&str, &str, PaletteCommand), i32)> = PALETTE
+            .iter()
+            .filter_map(|row| fuzzy_score(&self.palette_query, row.0).map(|s| (row, s)))
+            .collect();
+        scored.sort_by_key(|&(_, s)| std::cmp::Reverse(s));
+        scored.into_iter().map(|(r, _)| r).collect()
+    }
+
+    fn open_palette(&mut self) {
+        self.focus = Focus::Palette;
+        self.palette_query.clear();
+        self.palette_sel = 0;
+    }
+
     fn handle(&mut self, code: KeyCode, mods: KeyModifiers) {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
+        let alt = mods.contains(KeyModifiers::ALT);
         match self.focus {
             Focus::Columns => match code {
+                // M-x, as in Emacs
+                KeyCode::Char('x') if alt => self.open_palette(),
                 KeyCode::Esc => self.quit = true,
                 KeyCode::Char('c' | 'g') if ctrl => self.quit = true,
                 KeyCode::Enter => self.accept(),
@@ -457,7 +517,8 @@ impl CompleterState {
                         self.active_mut().refilter();
                     }
                 }
-                KeyCode::Char(c) if !ctrl => {
+                // `!alt` so an unbound M-<key> is ignored rather than typed
+                KeyCode::Char(c) if !ctrl && !alt => {
                     let col = self.active_mut();
                     col.query.push(c);
                     col.selected = 0;
@@ -483,6 +544,42 @@ impl CompleterState {
                 }
                 _ => {}
             },
+            // The palette owns the keyboard while open, so a stray character
+            // cannot leak into the column behind it.
+            Focus::Palette => {
+                let n = self.palette_rows().len();
+                match code {
+                    KeyCode::Esc => self.focus = Focus::Columns,
+                    KeyCode::Char('c' | 'g') if ctrl => self.focus = Focus::Columns,
+                    KeyCode::Enter => {
+                        if let Some(row) = self.palette_rows().get(self.palette_sel) {
+                            self.command = Some(row.2);
+                            self.quit = true;
+                        }
+                    }
+                    KeyCode::Up | KeyCode::BackTab => {
+                        self.palette_sel = self.palette_sel.saturating_sub(1)
+                    }
+                    KeyCode::Char('p') if ctrl => {
+                        self.palette_sel = self.palette_sel.saturating_sub(1)
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        self.palette_sel = (self.palette_sel + 1).min(n.saturating_sub(1))
+                    }
+                    KeyCode::Char('n') if ctrl => {
+                        self.palette_sel = (self.palette_sel + 1).min(n.saturating_sub(1))
+                    }
+                    KeyCode::Backspace => {
+                        self.palette_query.pop();
+                        self.palette_sel = 0;
+                    }
+                    KeyCode::Char(c) if !ctrl => {
+                        self.palette_query.push(c);
+                        self.palette_sel = 0;
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 }
@@ -490,9 +587,10 @@ impl CompleterState {
 // --- terminal driver -----------------------------------------------------
 
 /// Run the completer over the pipeline typed so far.  Returns the chosen
-/// pipeline on accept, or `None` on cancel.  Draws on `/dev/tty`, leaving
+/// pipeline on accept, a palette command to run after teardown, or
+/// `Cancelled`.  Draws on `/dev/tty`, leaving
 /// stdout for the result.
-pub fn run_completer(input: &str) -> io::Result<Option<String>> {
+pub fn run_completer(input: &str) -> io::Result<Outcome> {
     if let Ok(top) = toplevel() {
         let _ = std::env::set_current_dir(&top);
     }
@@ -517,7 +615,7 @@ pub fn run_completer(input: &str) -> io::Result<Option<String>> {
 fn event_loop(
     term: &mut Terminal<CrosstermBackend<std::fs::File>>,
     input: &str,
-) -> io::Result<Option<String>> {
+) -> io::Result<Outcome> {
     let mut st = CompleterState::new(input);
     while !st.quit {
         if st.focus == Focus::Columns {
@@ -531,7 +629,11 @@ fn event_loop(
             st.handle(k.code, k.modifiers);
         }
     }
-    Ok(st.accepted)
+    Ok(match (st.command, st.accepted) {
+        (Some(c), _) => Outcome::Command(c),
+        (None, Some(p)) => Outcome::Accepted(p),
+        (None, None) => Outcome::Cancelled,
+    })
 }
 
 // --- drawing -------------------------------------------------------------
@@ -637,6 +739,12 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
         );
     }
 
+    // The palette overlays the body rather than replacing the layout, so the
+    // pipeline you were building stays visible behind it.
+    if st.focus == Focus::Palette {
+        draw_palette(f, rows[1], st);
+    }
+
     // status
     let (info, legend) = match st.focus {
         Focus::Columns => {
@@ -649,13 +757,20 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                     n,
                     desc
                 ),
-                "Tab dive  ^L into preview  ↵ accept  ⌫ back  Esc quit",
+                "Tab dive  ^L preview  M-x cmds  ↵ accept  Esc quit",
             )
         }
         Focus::Preview => (
             format!("preview {}/{}", st.preview_sel + 1, st.frames.len()),
             "j/k move  ^L/↵ pivot on selection  Esc back",
         ),
+        Focus::Palette => {
+            let n = st.palette_rows().len();
+            (
+                format!("M-x {}/{}", if n == 0 { 0 } else { st.palette_sel + 1 }, n),
+                "↵ run  ^n/^p move  Esc close palette",
+            )
+        }
     };
     let status = Layout::horizontal([Constraint::Min(1), Constraint::Length(legend.len() as u16)])
         .split(rows[2]);
@@ -664,6 +779,59 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
         status[0],
     );
     f.render_widget(Paragraph::new(legend).style(dim), status[1]);
+}
+
+/// The `M-x` palette: a centred, fuzzy-filtered list of session commands.
+fn draw_palette(f: &mut ratatui::Frame, area: ratatui::layout::Rect, st: &CompleterState) {
+    let dim = Style::default().fg(Color::DarkGray);
+    let sel = Style::default().add_modifier(Modifier::REVERSED);
+    let rows = st.palette_rows();
+
+    // sized to content, but never wider or taller than the space we have
+    let w = rows
+        .iter()
+        .map(|r| r.0.len() + r.1.len() + 6)
+        .max()
+        .unwrap_or(40)
+        .clamp(30, area.width.saturating_sub(4).max(30) as usize) as u16;
+    let h = (rows.len() as u16 + 3).min(area.height.max(3));
+    let rect = ratatui::layout::Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w.min(area.width),
+        height: h.min(area.height),
+    };
+
+    // clear what is underneath so the columns do not show through
+    f.render_widget(ratatui::widgets::Clear, rect);
+
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|r| {
+            ListItem::new(Line::from(vec![
+                Span::raw(r.0.to_string()),
+                Span::raw("  "),
+                Span::styled(r.1.to_string(), dim),
+            ]))
+        })
+        .collect();
+
+    let mut ls = ListState::default();
+    if !rows.is_empty() {
+        ls.select(Some(st.palette_sel.min(rows.len() - 1)));
+    }
+    f.render_stateful_widget(
+        List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" M-x {}▮ ", st.palette_query)),
+            )
+            .highlight_style(sel)
+            .highlight_symbol("▌"),
+        rect,
+        &mut ls,
+    );
 }
 
 #[cfg(test)]
@@ -780,5 +948,128 @@ mod tests {
         st.frames.clear();
         st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
         assert_eq!(st.focus, Focus::Columns);
+    }
+
+    // --- M-x palette ------------------------------------------------------
+
+    fn alt(c: char) -> (KeyCode, KeyModifiers) {
+        (KeyCode::Char(c), KeyModifiers::ALT)
+    }
+
+    #[test]
+    fn m_x_opens_the_palette_without_typing_into_the_column() {
+        let mut st = CompleterState::new("commits ");
+        let before = st.active().query.clone();
+        let (c, m) = alt('x');
+        st.handle(c, m);
+        assert_eq!(st.focus, Focus::Palette);
+        assert_eq!(st.active().query, before, "M-x leaked a character");
+        assert!(!st.palette_rows().is_empty());
+    }
+
+    #[test]
+    fn the_palette_offers_no_pipeline_steps() {
+        // steps belong in the columns, where they get the preview
+        for row in PALETTE {
+            assert!(
+                complete_candidates("").iter().all(|c| c != row.0),
+                "palette duplicates the completion candidate {}",
+                row.0
+            );
+        }
+    }
+
+    #[test]
+    fn typing_in_the_palette_filters_it_and_does_not_reach_the_column() {
+        let mut st = CompleterState::new("commits ");
+        let (c, m) = alt('x');
+        st.handle(c, m);
+        for ch in "scroll".chars() {
+            st.handle(KeyCode::Char(ch), KeyModifiers::NONE);
+        }
+        assert_eq!(st.palette_query, "scroll");
+        assert_eq!(
+            st.active().query,
+            "",
+            "palette input leaked into the column"
+        );
+        assert_eq!(st.palette_rows().len(), 1);
+    }
+
+    #[test]
+    fn enter_in_the_palette_selects_a_command_rather_than_a_pipeline() {
+        let mut st = CompleterState::new("commits ");
+        let (c, m) = alt('x');
+        st.handle(c, m);
+        st.handle(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(st.quit);
+        assert_eq!(st.command, Some(PaletteCommand::ScrollbackBrowse));
+        assert!(
+            st.accepted.is_none(),
+            "a command must not accept a pipeline"
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_palette_and_keeps_the_completer_alive() {
+        let mut st = CompleterState::new("commits ");
+        let (c, m) = alt('x');
+        st.handle(c, m);
+        st.handle(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(st.focus, Focus::Columns);
+        assert!(!st.quit, "Esc closed the completer, not just the palette");
+        assert!(st.command.is_none());
+    }
+
+    #[test]
+    fn palette_movement_clamps_at_both_ends() {
+        let mut st = CompleterState::new("");
+        let (c, m) = alt('x');
+        st.handle(c, m);
+        let n = st.palette_rows().len();
+        for _ in 0..5 {
+            st.handle(KeyCode::Down, KeyModifiers::NONE);
+        }
+        assert_eq!(st.palette_sel, n - 1);
+        for _ in 0..5 {
+            st.handle(KeyCode::Up, KeyModifiers::NONE);
+        }
+        assert_eq!(st.palette_sel, 0);
+    }
+
+    #[test]
+    fn a_palette_query_matching_nothing_cannot_run_a_command() {
+        let mut st = CompleterState::new("");
+        let (c, m) = alt('x');
+        st.handle(c, m);
+        for ch in "zzzz".chars() {
+            st.handle(KeyCode::Char(ch), KeyModifiers::NONE);
+        }
+        assert!(st.palette_rows().is_empty());
+        st.handle(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(st.command.is_none());
+        assert!(!st.quit);
+    }
+
+    #[test]
+    fn an_unbound_meta_key_is_ignored_rather_than_typed() {
+        let mut st = CompleterState::new("commits ");
+        let (c, m) = alt('j');
+        st.handle(c, m);
+        assert_eq!(st.active().query, "");
+        assert_eq!(st.focus, Focus::Columns);
+    }
+
+    #[test]
+    fn the_palette_does_not_disturb_the_columns_behind_it() {
+        let mut st = CompleterState::new("commits ");
+        st.handle(KeyCode::Tab, KeyModifiers::NONE);
+        let cols = st.columns.len();
+        let prefix = st.active().prefix.clone();
+        let (c, m) = alt('x');
+        st.handle(c, m);
+        st.handle(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(st.columns.len(), cols);
+        assert_eq!(st.active().prefix, prefix);
     }
 }
