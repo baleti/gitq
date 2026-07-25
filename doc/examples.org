@@ -121,10 +121,10 @@ In Emacs, =RET= on a result opens the commit in Magit
 ** "What does a file CONTAIN at some commit?" — =grep=
 
 #+begin_example
-  $ gitq 'HEAD grep "morphismRequires" take 3'
-  doc/gitq.org:67: - =morphismRequires= — the field its input shape must carry (its *domain*),
-  doc/gitq.org:160:   and codomain to =morphismRequires=/=morphismYields=, its surface form to
-  src/Gitq/Complete.hs:82:   Right (m : _) -> Just (morphismRequires (m :: Morphism))
+  $ gitq 'HEAD grep "morphism_requires" take 3'
+  doc/gitq.org:67: - =morphism_requires= — the field its input shape must carry (its *domain*),
+  doc/gitq.org:160:   and codomain to =morphism_requires=/=morphism_yields=, its surface form to
+  src/Gitq/Complete.hs:82:   Right (m : _) -> Just (morphism_requires (m :: Morphism))
 #+end_example
 
 =grep= searches the full blob content of every commit flowing into it and

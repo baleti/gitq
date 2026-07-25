@@ -57,10 +57,7 @@ fn take_val_flag(args: &mut Vec<String>, f: &str) -> Option<String> {
 }
 
 fn main() {
-    let mut args: Vec<String> = std::env::args()
-        .skip(1)
-        .filter(|a| a != "--")
-        .collect();
+    let mut args: Vec<String> = std::env::args().skip(1).filter(|a| a != "--").collect();
 
     if args.is_empty() {
         usage();

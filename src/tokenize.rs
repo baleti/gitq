@@ -338,7 +338,10 @@ mod tests {
     fn regex_literal_versus_terminal_command() {
         assert_eq!(toks("/needle/"), vec![Token::Regex("needle".into())]);
         assert_eq!(toks("/show"), vec![Token::Terminal("show".into())]);
-        assert_eq!(toks("/branch-off"), vec![Token::Terminal("branch-off".into())]);
+        assert_eq!(
+            toks("/branch-off"),
+            vec![Token::Terminal("branch-off".into())]
+        );
     }
 
     #[test]
@@ -364,7 +367,13 @@ mod tests {
 
     #[test]
     fn morphism_paths_stay_one_token() {
-        for p in ["parent*", "parent+", "parent†", "tree.entries[Blob]", "diff.hunks"] {
+        for p in [
+            "parent*",
+            "parent+",
+            "parent†",
+            "tree.entries[Blob]",
+            "diff.hunks",
+        ] {
             assert_eq!(toks(p).len(), 1, "{p} should be one token");
             assert_eq!(toks(p)[0].text(), p);
         }

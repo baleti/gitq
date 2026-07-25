@@ -191,10 +191,9 @@ pub fn source_fields(src: &Source) -> &'static [&'static str] {
 /// The field a morphism's input shape must carry (its domain).
 pub fn morphism_requires(m: &Morphism) -> &'static str {
     match m {
-        Morphism::Parent
-        | Morphism::ParentIdx(_)
-        | Morphism::ParentStar
-        | Morphism::ParentPlus => "parents-count",
+        Morphism::Parent | Morphism::ParentIdx(_) | Morphism::ParentStar | Morphism::ParentPlus => {
+            "parents-count"
+        }
         Morphism::ParentAdjoint => "sha",
         Morphism::Tree => "tree",
         Morphism::TreeEntries(_) => "sha",
@@ -240,14 +239,32 @@ const LITERAL_FORMS: &[(&str, Morphism)] = &[
     (".parent+", Morphism::ParentPlus),
     (".parent\u{2020}", Morphism::ParentAdjoint),
     (".parent", Morphism::Parent),
-    (".tree.entries[Blob]", Morphism::TreeEntries(Some(EntryFilter::Blob))),
-    (".tree.entries[Tree]", Morphism::TreeEntries(Some(EntryFilter::Tree))),
+    (
+        ".tree.entries[Blob]",
+        Morphism::TreeEntries(Some(EntryFilter::Blob)),
+    ),
+    (
+        ".tree.entries[Tree]",
+        Morphism::TreeEntries(Some(EntryFilter::Tree)),
+    ),
     (".tree.entries", Morphism::TreeEntries(None)),
-    (".tree.blobs", Morphism::TreeEntries(Some(EntryFilter::Blob))),
-    (".tree.subtrees", Morphism::TreeEntries(Some(EntryFilter::Tree))),
+    (
+        ".tree.blobs",
+        Morphism::TreeEntries(Some(EntryFilter::Blob)),
+    ),
+    (
+        ".tree.subtrees",
+        Morphism::TreeEntries(Some(EntryFilter::Tree)),
+    ),
     (".tree", Morphism::Tree),
-    (".entries[Blob]", Morphism::TreeEntries(Some(EntryFilter::Blob))),
-    (".entries[Tree]", Morphism::TreeEntries(Some(EntryFilter::Tree))),
+    (
+        ".entries[Blob]",
+        Morphism::TreeEntries(Some(EntryFilter::Blob)),
+    ),
+    (
+        ".entries[Tree]",
+        Morphism::TreeEntries(Some(EntryFilter::Tree)),
+    ),
     (".entries", Morphism::TreeEntries(None)),
     (".diff.hunks", Morphism::DiffHunks),
     (".diff.lines", Morphism::DiffLines),
@@ -596,7 +613,12 @@ mod tests {
         .into_iter()
         .filter(|fs| fs.contains(&dom))
         .collect();
-        assert_eq!(carriers.len(), 1, "{dom} is carried by {} shapes", carriers.len());
+        assert_eq!(
+            carriers.len(),
+            1,
+            "{dom} is carried by {} shapes",
+            carriers.len()
+        );
         assert!(DIFF_FIELDS.contains(&dom));
     }
 
@@ -615,8 +637,9 @@ mod tests {
         );
         // and the composite must actually typecheck: diff's codomain has to
         // carry what hunks demands
-        assert!(morphism_yields(&Morphism::Diff(None))
-            .contains(&morphism_requires(&Morphism::Hunks)));
+        assert!(
+            morphism_yields(&Morphism::Diff(None)).contains(&morphism_requires(&Morphism::Hunks))
+        );
     }
 
     #[test]

@@ -263,8 +263,10 @@ fn exec_via(frames: Vec<Frame>, m: &Morphism) -> R<Vec<Frame>> {
             batch_lookup(&shas)
         }
         Morphism::ParentIdx(i) => {
-            let shas: Vec<Arc<str>> =
-                frames.iter().filter_map(|f| f.parents.get(*i).cloned()).collect();
+            let shas: Vec<Arc<str>> = frames
+                .iter()
+                .filter_map(|f| f.parents.get(*i).cloned())
+                .collect();
             batch_lookup(&shas)
         }
         Morphism::ParentStar => traverse_parents_star(&frames, false),
@@ -272,7 +274,10 @@ fn exec_via(frames: Vec<Frame>, m: &Morphism) -> R<Vec<Frame>> {
         Morphism::ParentAdjoint => via_parent_adjoint(&frames),
         Morphism::Tree => frames.iter().filter_map(tree_of).collect(),
         Morphism::TreeEntries(fl) => frames.iter().flat_map(|f| entries_of(*fl, f)).collect(),
-        Morphism::Diff(r) => frames.iter().flat_map(|f| diff_of(r.as_deref(), f)).collect(),
+        Morphism::Diff(r) => frames
+            .iter()
+            .flat_map(|f| diff_of(r.as_deref(), f))
+            .collect(),
         Morphism::DiffHunks => frames.iter().flat_map(hunks_of).collect(),
         Morphism::Hunks => frames.iter().flat_map(hunks_of_diff).collect(),
         Morphism::DiffLines => frames.iter().flat_map(diff_lines_of).collect(),
@@ -338,12 +343,21 @@ fn diff_of(refname: Option<&str>, f: &Frame) -> Vec<Frame> {
     let other: Option<String> = if no_parent {
         None
     } else {
-        Some(refname.map(str::to_string).unwrap_or_else(|| format!("{sha}^")))
+        Some(
+            refname
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{sha}^")),
+        )
     };
 
     let paths = match &other {
         None => run_git(&[
-            "diff-tree", "--root", "-r", "--name-only", "--no-commit-id", &sha,
+            "diff-tree",
+            "--root",
+            "-r",
+            "--name-only",
+            "--no-commit-id",
+            &sha,
         ]),
         Some(o) => run_git(&["diff-tree", "-r", "--name-only", "--no-commit-id", o, &sha]),
     };
@@ -453,8 +467,7 @@ fn via_history(frames: &[Frame]) -> Vec<Frame> {
         for sha in shas {
             if let Some(c) = cmap.get(sha.as_str()) {
                 let mut c = c.clone();
-                c.attrs
-                    .insert("path".to_string(), Value::Str(path.clone()));
+                c.attrs.insert("path".to_string(), Value::Str(path.clone()));
                 out.push(c);
             }
         }
@@ -627,7 +640,10 @@ pub fn parse_diff_hunks(diff_lines: &[String], commit_sha: &str, parent: &Frame)
                 vec![
                     ("path".to_string(), s(&path)),
                     ("start-line".to_string(), Value::Num(start)),
-                    ("end-line".to_string(), Value::Num(start + (count - 1).max(0))),
+                    (
+                        "end-line".to_string(),
+                        Value::Num(start + (count - 1).max(0)),
+                    ),
                     ("content".to_string(), s(&content)),
                     ("commit-sha".to_string(), s(commit_sha)),
                 ],
@@ -745,7 +761,10 @@ fn exec_grep(frames: &[Frame], pat: &str, regex: bool) -> Vec<Frame> {
                 vec![
                     ("sha".to_string(), Value::Str(sha.clone())),
                     ("path".to_string(), s(path)),
-                    ("line-number".to_string(), Value::Num(n_str.parse().unwrap_or(0))),
+                    (
+                        "line-number".to_string(),
+                        Value::Num(n_str.parse().unwrap_or(0)),
+                    ),
                     ("content".to_string(), s(content)),
                     ("commit-sha".to_string(), Value::Str(sha.clone())),
                 ],
@@ -936,7 +955,10 @@ mod tests {
 
     #[test]
     fn diff_header_paths_survive_spaces() {
-        assert_eq!(diff_header_path("diff --git a/a.txt b/a.txt"), Some("a.txt"));
+        assert_eq!(
+            diff_header_path("diff --git a/a.txt b/a.txt"),
+            Some("a.txt")
+        );
         assert_eq!(
             diff_header_path("diff --git a/my file.txt b/my file.txt"),
             Some("my file.txt")
@@ -994,7 +1016,10 @@ mod tests {
         assert_eq!(fs.len(), 1);
         assert_eq!(fs[0].field("start-line"), Some(Value::Num(1)));
         assert_eq!(fs[0].field("end-line"), Some(Value::Num(2)));
-        assert_eq!(fs[0].field("content").unwrap().as_str(), Some(" ctx\n+new\n"));
+        assert_eq!(
+            fs[0].field("content").unwrap().as_str(),
+            Some(" ctx\n+new\n")
+        );
         // commit context reattached by construction
         assert_eq!(fs[0].field("author").unwrap().as_str(), Some("alice"));
         assert_eq!(fs[0].field("message").unwrap().as_str(), Some("m"));

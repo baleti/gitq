@@ -92,10 +92,7 @@ fn commit_frame(
 
     match decoded.author() {
         Ok(a) => {
-            attrs.insert(
-                "email".to_string(),
-                s(&String::from_utf8_lossy(a.email)),
-            );
+            attrs.insert("email".to_string(), s(&String::from_utf8_lossy(a.email)));
             attrs.insert("author".to_string(), s(&String::from_utf8_lossy(a.name)));
             attrs.insert(
                 "date".to_string(),
@@ -111,19 +108,21 @@ fn commit_frame(
         }
     }
 
-    attrs.insert(
-        "tree".to_string(),
-        s(&decoded.tree().to_hex().to_string()),
-    );
+    attrs.insert("tree".to_string(), s(&decoded.tree().to_hex().to_string()));
     // %s (the subject): first paragraph, newlines collapsed to spaces —
     // gix's summary has the same semantics
     attrs.insert(
         "message".to_string(),
-        s(&String::from_utf8_lossy(decoded.message().summary().as_ref())),
+        s(&String::from_utf8_lossy(
+            decoded.message().summary().as_ref(),
+        )),
     );
 
     let parents: Vec<Arc<str>> = match walk_parents {
-        Some(ps) => ps.iter().map(|p| Arc::from(p.to_hex().to_string())).collect(),
+        Some(ps) => ps
+            .iter()
+            .map(|p| Arc::from(p.to_hex().to_string()))
+            .collect(),
         None => decoded
             .parents()
             .map(|p| Arc::from(p.to_hex().to_string()))

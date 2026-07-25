@@ -239,10 +239,7 @@ fn send_to_emacs(st: &mut BrowserState) {
 }
 
 fn open_in_emacs(entries: &[Entry]) -> Result<bool, String> {
-    let path = std::env::temp_dir().join(format!(
-        "gitq-scrollback-{}.el",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("gitq-scrollback-{}.el", std::process::id()));
     let mut f = std::fs::File::create(&path).map_err(|e| format!("temp file failed: {e}"))?;
     f.write_all(render_entries_sexp(entries).as_bytes())
         .map_err(|e| format!("temp file failed: {e}"))?;
@@ -251,7 +248,10 @@ fn open_in_emacs(entries: &[Entry]) -> Result<bool, String> {
     // Emacs deletes the temp file after reading it, so we don't remove it.
     let form = format!(
         "(gitq-scrollback-open-from-file \"{}\")",
-        path.display().to_string().replace('\\', "\\\\").replace('"', "\\\"")
+        path.display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
     );
     match std::process::Command::new("emacsclient")
         .args(["-e", &form])

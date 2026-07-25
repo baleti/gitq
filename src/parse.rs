@@ -266,10 +266,7 @@ pub fn parse_step<'a>(
             let kw_re = rest0.first().map(Token::text) == Some("regex");
             let rest = if kw_re { &rest0[1..] } else { rest0 };
             Ok((
-                vec![Step::Pickaxe(
-                    pat_tok.text().to_string(),
-                    slash_re || kw_re,
-                )],
+                vec![Step::Pickaxe(pat_tok.text().to_string(), slash_re || kw_re)],
                 rest,
                 f,
             ))
@@ -521,10 +518,7 @@ fn parse_where<'a>(toks: &'a [Token], fields: &[String]) -> P<(Vec<Cond>, &'a [T
 /// True where a condition clause ends: end of input, a comma, another
 /// field, or a /terminal.
 fn clause_ends(t: Option<&Token>, fields: &[String]) -> bool {
-    t.is_none()
-        || matches!(t, Some(Token::Comma))
-        || is_field(t, fields)
-        || is_terminal(t)
+    t.is_none() || matches!(t, Some(Token::Comma)) || is_field(t, fields) || is_terminal(t)
 }
 
 fn parse_condition<'a>(
@@ -651,7 +645,11 @@ fn parse_condition<'a>(
             if op == Op::Regex {
                 if let Value::Str(pat) = &val {
                     if let Err(e) = regex::Regex::new(pat) {
-                        let flat = e.to_string().split_whitespace().collect::<Vec<_>>().join(" ");
+                        let flat = e
+                            .to_string()
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ");
                         return perr(format!("gitq: invalid regex '{pat}': {flat}"));
                     }
                 }
@@ -730,8 +728,7 @@ fn resolve_contexts(steps: Vec<Step>) -> P<Vec<Step>> {
     for st in steps {
         match st {
             Step::Context(n, pats) if pats.is_empty() => {
-                let inherited: Vec<(String, bool)> =
-                    out.iter().flat_map(search_patterns).collect();
+                let inherited: Vec<(String, bool)> = out.iter().flat_map(search_patterns).collect();
                 if inherited.is_empty() {
                     return perr(
                         "gitq: 'context' has no pattern to center on — give one (context 3 \"term\") or precede it with a content filter, grep, or pickaxe",
@@ -941,7 +938,10 @@ mod tests {
 
     #[test]
     fn via_chains_thread_the_field_set() {
-        assert_eq!(ok("HEAD via parent").steps, vec![Step::Via(Morphism::Parent)]);
+        assert_eq!(
+            ok("HEAD via parent").steps,
+            vec![Step::Via(Morphism::Parent)]
+        );
         assert_eq!(
             ok("HEAD via parent.tree").steps,
             vec![Step::Via(Morphism::Parent), Step::Via(Morphism::Tree)]
@@ -980,10 +980,7 @@ mod tests {
         // the gap fix: `diff.hunks` had no factors before
         assert_eq!(
             ok("HEAD via diff via hunks").steps,
-            vec![
-                Step::Via(Morphism::Diff(None)),
-                Step::Via(Morphism::Hunks)
-            ]
+            vec![Step::Via(Morphism::Diff(None)), Step::Via(Morphism::Hunks)]
         );
         // and it must not typecheck on a shape that merely has `path`
         err("blobs via hunks", "needs a 'parent-sha' field");
@@ -1047,7 +1044,10 @@ mod tests {
             &ok("commits where author alice, parents-count 1").steps[0],
             Step::Where(c) if c.len() == 2
         ));
-        err("commits where author alice,", "expected a field name after ','");
+        err(
+            "commits where author alice,",
+            "expected a field name after ','",
+        );
     }
 
     #[test]
@@ -1059,10 +1059,16 @@ mod tests {
 
     #[test]
     fn unknown_fields_and_operators() {
-        err("commits where nosuchfield alice", "not valid here after 'where'");
+        err(
+            "commits where nosuchfield alice",
+            "not valid here after 'where'",
+        );
         // a field absent from the SHAPE is caught first, before its type is
         // ever consulted — `modified` is not in commitFields
-        err("commits where modified alice", "not valid here after 'where'");
+        err(
+            "commits where modified alice",
+            "not valid here after 'where'",
+        );
         // to reach the unknown-operator branch the flag must be in scope
         err("worktrees where modified alice", "unknown where operator");
     }
@@ -1083,7 +1089,10 @@ mod tests {
         // Gap fix.  0.7.0 accepted this as a keep-everything no-op — the
         // only step that did — and returned every commit with exit 0.
         err("commits where", "'where' requires at least one condition");
-        err("commits where /count", "'where' requires at least one condition");
+        err(
+            "commits where /count",
+            "'where' requires at least one condition",
+        );
     }
 
     // --- relational steps ------------------------------------------------
@@ -1098,8 +1107,14 @@ mod tests {
 
     #[test]
     fn sort_accepts_descending_and_checks_the_field() {
-        assert_eq!(ok("commits sort date").steps, vec![Step::Sort("date".into(), false)]);
-        assert_eq!(ok("commits sort -date").steps, vec![Step::Sort("date".into(), true)]);
+        assert_eq!(
+            ok("commits sort date").steps,
+            vec![Step::Sort("date".into(), false)]
+        );
+        assert_eq!(
+            ok("commits sort -date").steps,
+            vec![Step::Sort("date".into(), true)]
+        );
         err("commits sort", "requires a field name");
         err("commits sort nosuch", "not valid here after 'sort'");
     }
@@ -1119,7 +1134,10 @@ mod tests {
     #[test]
     fn pick_narrows_the_field_set_for_later_steps() {
         // after `pick sha`, `sort author` must no longer typecheck
-        err("commits pick sha sort author", "not valid here after 'sort'");
+        err(
+            "commits pick sha sort author",
+            "not valid here after 'sort'",
+        );
     }
 
     #[test]
@@ -1161,7 +1179,10 @@ mod tests {
 
     #[test]
     fn patternless_context_with_nothing_to_inherit_is_an_error() {
-        err("commits via diff.lines context 2", "no pattern to center on");
+        err(
+            "commits via diff.lines context 2",
+            "no pattern to center on",
+        );
     }
 
     #[test]
@@ -1218,7 +1239,10 @@ mod tests {
 
     #[test]
     fn terminals_consume_everything_or_error() {
-        err("commits /show extra", "unexpected token 'extra' after 'show'");
+        err(
+            "commits /show extra",
+            "unexpected token 'extra' after 'show'",
+        );
         err("commits /nosuchterminal", "unknown terminal operation");
     }
 

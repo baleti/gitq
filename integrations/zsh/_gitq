@@ -1,7 +1,7 @@
 #compdef gitq
 # zsh completion for the gitq pipeline CLI tool.
 #
-# Install: `make install-zsh` in the repo root (symlinks this file into
+# Install: `make install-zsh` in the repo root (copies this file into
 # ${XDG_DATA_HOME:-~/.local/share}/zsh/completions), or copy/symlink it
 # into any directory on your $fpath yourself. Then in ~/.zshrc, before
 # compinit:
@@ -46,41 +46,36 @@ _gitq() {
 
   # Ask gitq for candidates given everything typed so far (before + partial).
   local full_prefix="${before}${partial}"
-  local -a candidates
-  candidates=(${(f)"$(gitq --complete "$full_prefix" 2>/dev/null)"})
+  local -a annotated
+  annotated=(${(f)"$(gitq --complete-annotated "$full_prefix" 2>/dev/null)"})
 
-  if [[ ${#candidates[@]} -eq 0 ]]; then
+  if [[ ${#annotated[@]} -eq 0 ]]; then
     return 1
   fi
 
-  # Group candidates by type for a nicer completion menu.
-  local -a sources steps terminals morphisms fields operators
-  sources=(commits branches tags refs worktrees blobs HEAD)
-  steps=(via where grep pickaxe path pick take skip first last sort context in)
-  terminals=(/show /copy /insert /count /branch-off /amend /squash
-             /reword /remove /delete /commit /stage /mark /worktree)
-  morphisms=(parent 'parent*' 'parent+' tree tree.blobs tree.subtrees
-             tree.entries diff diff.hunks diff.lines history commit)
-  fields=(sha author email date message path name branch parents-count)
-  operators=('==' '!=' '>' '<' '>=' '<=' regex after before within is)
-
+  # Group candidates by kind for a nicer completion menu.
+  #
+  # The kind comes from `gitq --complete-annotated`, which prints
+  # "candidate<TAB>kind<TAB>description" — the same registry the parser and
+  # the Emacs client use.  This file used to carry its own copies of the
+  # source/step/morphism/field/operator lists, which is exactly the drift
+  # the registry exists to prevent: they had already fallen behind on
+  # `parent†` and `tree.entries[Blob]`, and would have missed `hunks`.
   local -a src_cands step_cands term_cands morph_cands field_cands op_cands other_cands
-  for c in $candidates; do
-    if (( ${sources[(Ie)$c]} )); then
-      src_cands+=("$c")
-    elif (( ${terminals[(Ie)$c]} )); then
-      term_cands+=("$c")
-    elif (( ${morphisms[(Ie)$c]} )); then
-      morph_cands+=("$c")
-    elif (( ${fields[(Ie)$c]} )); then
-      field_cands+=("$c")
-    elif (( ${operators[(Ie)$c]} )); then
-      op_cands+=("$c")
-    elif (( ${steps[(Ie)$c]} )); then
-      step_cands+=("$c")
-    else
-      other_cands+=("$c")
-    fi
+  local line c kind
+  for line in $annotated; do
+    c="${line%%$'\t'*}"
+    kind="${${line#*$'\t'}%%$'\t'*}"
+    case "$kind" in
+      source)   src_cands+=("$c")   ;;
+      step)     step_cands+=("$c")  ;;
+      morphism) morph_cands+=("$c") ;;
+      field)    field_cands+=("$c") ;;
+      operator) op_cands+=("$c")    ;;
+      terminal) term_cands+=("$c")  ;;
+      # dynamic values (author names, shas, refs) have no registry kind
+      *)        other_cands+=("$c") ;;
+    esac
   done
 
   local expl

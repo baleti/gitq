@@ -55,9 +55,7 @@ pub fn capture_scrollback(target: &CaptureTarget) -> R<String> {
         .map_err(|_| GitqError("gitq: scrollback needs the tmux binary on $PATH".into()))?;
 
     if !out.status.success() {
-        return gitq_error(
-            "gitq: scrollback capture failed (tmux capture-pane returned an error)",
-        );
+        return gitq_error("gitq: scrollback capture failed (tmux capture-pane returned an error)");
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

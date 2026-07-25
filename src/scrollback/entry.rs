@@ -381,7 +381,14 @@ mod tests {
 
     #[test]
     fn prompt_shapes_the_default_regex_accepts() {
-        for p in ["$ ", "demo$ ", "user@host:~/proj$ ", "% ", "root# ", "host> "] {
+        for p in [
+            "$ ",
+            "demo$ ",
+            "user@host:~/proj$ ",
+            "% ",
+            "root# ",
+            "host> ",
+        ] {
             let es = parse_entries(&format!("{p}cmd\nout\n"));
             assert_eq!(es[0].command.as_deref(), Some("cmd"), "prompt {p:?}");
         }
