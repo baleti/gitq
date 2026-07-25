@@ -10,5 +10,6 @@
 
 pub mod ast;
 pub mod frame;
+pub mod parse;
 pub mod registry;
 pub mod tokenize;
