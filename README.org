@@ -222,6 +222,28 @@ e.g. =$ZDOTDIR/completions= if you keep zsh config under
 Completion inside the pipeline argument delegates to =gitq --complete=, so
 zsh, Emacs, and the parser always agree on what is valid where.
 
+** Interactive completer (TAB)
+
+[[file:integrations/zsh/gitq-complete.zsh][integrations/zsh/gitq-complete.zsh]] rebinds =TAB= to gitq's own columnar
+completer (=gitq --complete-tui=) *for gitq command lines only* — every
+other command keeps whatever =TAB= already did, so it sits alongside
+fzf-tab rather than replacing it.  A fuzzy-filtered candidate column on the
+left (with each candidate's registry kind) and a wide live preview of the
+pipeline each candidate would produce on the right; type to filter, =Tab=
+commits the highlighted candidate and moves to the next position (so
+=Tab='ing builds the pipeline one token at a time), =↵= accepts, =⌫= on an
+empty query steps back a token, =Esc= cancels.  Like fzf's widgets it draws
+on =/dev/tty= and needs no tmux.
+
+#+begin_src sh
+  cd ~/gitq && make install-zsh-complete
+#+end_src
+
+The installer prints the one =source= line to add to =~/.zshrc= — *after*
+fzf-tab, so the fall-through for non-gitq commands picks up fzf-tab's
+binding.  It reuses the same =--complete=/=--preview= machinery as
+everything else, so it can't drift from the language either.
+
 ** Scrollback widgets
 
 [[file:integrations/zsh/gitq-scrollback.zsh][integrations/zsh/gitq-scrollback.zsh]] adds two ZLE widgets over the

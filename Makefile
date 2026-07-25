@@ -109,8 +109,19 @@ install-zsh-scrollback:
 	@echo "  source $(ZSH_COMP_DIR)/gitq-scrollback.zsh"
 	@echo "Then Meta-b browses scrollback, Meta-e sends it to Emacs (both need tmux)."
 
+# gitq's own TAB completer (the `gitq --complete-tui` columnar TUI).  Like the
+# scrollback widgets this is *sourced*, and it must be sourced AFTER fzf-tab
+# so its fall-through captures fzf-tab's TAB binding.
+install-zsh-complete:
+	@mkdir -p $(ZSH_COMP_DIR)
+	@install -m 644 $(CURDIR)/integrations/zsh/gitq-complete.zsh $(ZSH_COMP_DIR)/gitq-complete.zsh
+	@echo "Copied gitq-complete.zsh into $(ZSH_COMP_DIR)."
+	@echo "Add to ~/.zshrc, AFTER sourcing fzf-tab (widgets are sourced, not autoloaded):"
+	@echo "  source $(ZSH_COMP_DIR)/gitq-complete.zsh"
+	@echo "TAB on a gitq command then opens the columnar completer; other commands are unaffected."
+
 clean:
 	$(CARGO) clean
 
 .PHONY: build test lint corpus install install-zsh install-bash \
-        install-zsh-scrollback clean
+        install-zsh-scrollback install-zsh-complete clean
