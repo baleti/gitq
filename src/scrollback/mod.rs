@@ -8,4 +8,5 @@ pub mod ansi;
 pub mod browse;
 pub mod capture;
 pub mod entry;
+pub mod mark;
 pub mod render;
