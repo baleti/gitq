@@ -13,6 +13,7 @@ pub mod complete;
 pub mod exec;
 pub mod frame;
 pub mod git;
+pub mod native;
 pub mod parse;
 pub mod registry;
 pub mod render;
