@@ -58,6 +58,12 @@ install: build
 	@echo "pick this up with no further steps."
 
 # Per-user zsh completion: copy _gitq into a fixed XDG-style dir.
+#
+# `install`, not `cp`: it unlinks the destination first.  `cp` follows an
+# existing destination symlink and writes through it — and when that symlink
+# points back at this repo (as it does for anyone who installed while these
+# targets still symlinked) `cp` refuses outright with "are the same file",
+# so the upgrade path was broken.
 # Nothing system-wide, and no fpath auto-detection — always the same
 # directory, so it's predictable across machines. We only print the
 # ~/.zshrc line that's needed; we never edit the file ourselves.
@@ -66,7 +72,7 @@ ZSH_COMP_DIR ?= $(XDG_DATA_HOME)/zsh/completions
 
 install-zsh:
 	@mkdir -p $(ZSH_COMP_DIR)
-	@cp $(CURDIR)/integrations/zsh/_gitq $(ZSH_COMP_DIR)/_gitq
+	@install -m 644 $(CURDIR)/integrations/zsh/_gitq $(ZSH_COMP_DIR)/_gitq
 	@echo "Copied _gitq into $(ZSH_COMP_DIR)"
 	@echo "Add this to ~/.zshrc, BEFORE 'autoload -Uz compinit' / 'compinit':"
 	@echo "  fpath=($(ZSH_COMP_DIR) \$$fpath)"
@@ -81,7 +87,7 @@ BASH_COMP_DIR ?= $(XDG_DATA_HOME)/bash-completion/completions
 
 install-bash:
 	@mkdir -p $(BASH_COMP_DIR)
-	@cp $(CURDIR)/integrations/bash/gitq.bash $(BASH_COMP_DIR)/gitq
+	@install -m 644 $(CURDIR)/integrations/bash/gitq.bash $(BASH_COMP_DIR)/gitq
 	@echo "Copied gitq bash completion into $(BASH_COMP_DIR)."
 	@echo "If your bash-completion package doesn't auto-source that dir, add"
 	@echo "to ~/.bashrc:  source $(BASH_COMP_DIR)/gitq"
@@ -92,7 +98,7 @@ install-bash:
 # to add to ~/.zshrc.
 install-zsh-scrollback:
 	@mkdir -p $(ZSH_COMP_DIR)
-	@cp $(CURDIR)/integrations/zsh/gitq-scrollback.zsh $(ZSH_COMP_DIR)/gitq-scrollback.zsh
+	@install -m 644 $(CURDIR)/integrations/zsh/gitq-scrollback.zsh $(ZSH_COMP_DIR)/gitq-scrollback.zsh
 	@echo "Copied gitq-scrollback.zsh into $(ZSH_COMP_DIR)."
 	@echo "Add to ~/.zshrc (widgets are sourced, not autoloaded):"
 	@echo "  source $(ZSH_COMP_DIR)/gitq-scrollback.zsh"
