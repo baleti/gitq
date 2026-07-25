@@ -72,6 +72,16 @@ Requires a Rust toolchain (1.85 or newer).  There is no second toolchain
 and no optional backend flag: the in-process gix backend is a module, so
 one =cargo build= produces the whole thing.
 
+If you installed Rust with rustup and =make= reports =cargo: No such file
+or directory=, the toolchain is present but not on your =PATH=: rustup
+writes its PATH line to =~/.profile=, which zsh does not read.  Add this to
+=~/.zshrc= (the Makefile also looks in =~/.cargo/bin= as a fallback, so the
+build works either way):
+
+#+begin_src sh
+  . "$HOME/.cargo/env"
+#+end_src
+
 #+begin_src sh
   git clone https://github.com/baleti/gitq ~/gitq
   cd ~/gitq
