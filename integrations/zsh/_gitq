@@ -90,10 +90,8 @@ _gitq() {
   PREFIX="$_gitq_partial"
   SUFFIX=""
 
+  # Ask gitq for candidates given everything typed so far.
   local full_prefix="$_gitq_full"
-
-  # Ask gitq for candidates given everything typed so far (before + partial).
-  local full_prefix="${before}${partial}"
   local -a annotated
   annotated=(${(f)"$(gitq --complete-annotated "$full_prefix" 2>/dev/null)"})
 
