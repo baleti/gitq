@@ -101,8 +101,8 @@ pub fn implicit_op(t: FieldType) -> Option<crate::ast::Op> {
 /// Reserved step keywords: these always start a new stage and must be
 /// quoted when used as string values.
 pub const STEP_KEYWORDS: &[&str] = &[
-    "via", "where", "grep", "pickaxe", "path", "pick", "take", "skip", "first", "last", "sort",
-    "context", "in",
+    "via", "where", "grep", "pickaxe", "path", "pick", "skip", "first", "last", "sort", "context",
+    "in",
 ];
 
 // Structural field-set typing: the exact set of fields each frame shape
@@ -460,7 +460,6 @@ pub fn describe_token(tok: &str) -> Option<&'static str> {
         "pickaxe" => "filter commits whose diff adds/removes a pattern",
         "path" => "path glob step, or the file-path field",
         "pick" => "project onto specific fields",
-        "take" => "keep the first N results",
         "skip" => "drop the first N results",
         "first" => "keep only the first result",
         "last" => "keep only the last result",
