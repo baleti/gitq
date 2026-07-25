@@ -78,7 +78,16 @@ one =cargo build= produces the whole thing.
   make install
 #+end_src
 
-Installs to =~/.local/bin= (override with =BINDIR=...=).  =make test= runs
+Installs to =~/.local/bin= (override with =BINDIR=...=).
+
+The completion installers (=install-zsh=, =install-bash=,
+=install-zsh-scrollback=) *copy* their files rather than symlinking, so an
+installed shell stays working even if the repository is moved or deleted —
+but re-run them after pulling a change to =integrations/=.  The Emacs
+integration needs nothing: it resolves =gitq= on =exec-path=, so =make
+install= is enough.
+
+=make test= runs
 the unit suite; =make corpus= runs the golden corpus, which drives the real
 binary over a generated fixture repository and checks the CLI surface
 end to end — plain output, =--sexp=, the fail-loud error catalogue, and
@@ -203,14 +212,16 @@ tmux, is in [[file:doc/scrollback.org][doc/scrollback.org]].
 
 * Bash completion
 
-Same delegation model as zsh — no grammar is duplicated, both call
-=gitq --complete=:
+Same delegation model as zsh — no grammar is duplicated.  bash calls
+=gitq --complete=; zsh calls =gitq --complete-annotated=, which adds the
+registry's own kind and description for each candidate so the menu can
+group them without keeping its own copy of the grammar:
 
 #+begin_src sh
   cd ~/gitq && make install-bash
 #+end_src
 
-That symlinks =integrations/bash/gitq.bash= into
+That copies =integrations/bash/gitq.bash= into
 =~/.local/share/bash-completion/completions/gitq=.  Most distributions'
 =bash-completion= package auto-sources that directory; if yours does not,
 the installer prints the one line to add to =~/.bashrc=:

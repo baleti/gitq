@@ -61,7 +61,7 @@ install-zsh:
 	@echo "If compinit already cached completions once, refresh it after adding the line:"
 	@echo "  rm -f ~/.zcompdump && exec zsh"
 
-# Per-user bash completion: symlink gitq.bash into the bash-completion
+# Per-user bash completion: copy gitq.bash into the bash-completion
 # completions dir.  Far simpler than zsh — bash has no fpath-style
 # autodiscovery, so if the bash-completion package doesn't auto-source
 # that directory we print the one `source` line to add to ~/.bashrc.
@@ -69,19 +69,19 @@ BASH_COMP_DIR ?= $(XDG_DATA_HOME)/bash-completion/completions
 
 install-bash:
 	@mkdir -p $(BASH_COMP_DIR)
-	@ln -sf $(CURDIR)/integrations/bash/gitq.bash $(BASH_COMP_DIR)/gitq
-	@echo "Linked gitq bash completion into $(BASH_COMP_DIR)."
+	@cp $(CURDIR)/integrations/bash/gitq.bash $(BASH_COMP_DIR)/gitq
+	@echo "Copied gitq bash completion into $(BASH_COMP_DIR)."
 	@echo "If your bash-completion package doesn't auto-source that dir, add"
 	@echo "to ~/.bashrc:  source $(BASH_COMP_DIR)/gitq"
 
 # Per-user zsh scrollback widgets.  Unlike _gitq these are *sourced*, not
-# autoloaded, so there's no fpath to discover — we just symlink the file
-# next to _gitq (or wherever ZSH_COMP_DIR points) and print the one source
-# line to add to ~/.zshrc.
+# autoloaded, so there's no fpath to discover — we just copy the file next
+# to _gitq (or wherever ZSH_COMP_DIR points) and print the one source line
+# to add to ~/.zshrc.
 install-zsh-scrollback:
 	@mkdir -p $(ZSH_COMP_DIR)
-	@ln -sf $(CURDIR)/integrations/zsh/gitq-scrollback.zsh $(ZSH_COMP_DIR)/gitq-scrollback.zsh
-	@echo "Linked gitq-scrollback.zsh into $(ZSH_COMP_DIR)."
+	@cp $(CURDIR)/integrations/zsh/gitq-scrollback.zsh $(ZSH_COMP_DIR)/gitq-scrollback.zsh
+	@echo "Copied gitq-scrollback.zsh into $(ZSH_COMP_DIR)."
 	@echo "Add to ~/.zshrc (widgets are sourced, not autoloaded):"
 	@echo "  source $(ZSH_COMP_DIR)/gitq-scrollback.zsh"
 	@echo "Then Meta-b browses scrollback, Meta-e sends it to Emacs (both need tmux)."
