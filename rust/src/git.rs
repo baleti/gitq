@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn commit_lines_parse_into_commit_frames() {
-        let line = "abc123\0a@e.com\0alice\02024-01-01 10:00:00 +0000\0p1 p2\0tree1\0subject here";
+        let line = "abc123\0a@e.com\0alice\u{0}2024-01-01 10:00:00 +0000\0p1 p2\0tree1\0subject here";
         let f = parse_commit_line(line).expect("should parse");
         assert_eq!(f.ty, FrameType::Commit);
         assert_eq!(f.field("sha").unwrap().as_str(), Some("abc123"));

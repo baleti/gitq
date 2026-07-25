@@ -9,8 +9,12 @@
 //! two can be diffed during the port.
 
 pub mod ast;
+pub mod complete;
+pub mod exec;
 pub mod frame;
 pub mod git;
 pub mod parse;
 pub mod registry;
+pub mod render;
+pub mod terminal;
 pub mod tokenize;

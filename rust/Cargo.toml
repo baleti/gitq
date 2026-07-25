@@ -8,6 +8,10 @@ license = "MIT"
 authors = ["baleti"]
 
 
+[[bin]]
+name = "gitq"
+path = "src/main.rs"
+
 [lib]
 name = "gitq"
 path = "src/lib.rs"

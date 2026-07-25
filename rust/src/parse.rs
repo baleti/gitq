@@ -480,8 +480,15 @@ fn parse_where<'a>(toks: &'a [Token], fields: &[String]) -> P<(Vec<Cond>, &'a [T
     let mut rest = toks;
 
     loop {
-        // a condition starts only where a field name does
-        if !is_field(rest.first(), fields) {
+        // A condition starts only where a field name does — but `path` is
+        // both a field and a step keyword, so an un-separated `... path
+        // GLOB` after a condition is read as the STEP, not as another
+        // condition substring-matching the literal glob.  0.7.0 resolved
+        // this the other way and `via diff.lines where content x path
+        // "*.txt"` silently returned nothing.  A comma still forces the
+        // field reading (`where content x, path == "y"`), so nothing that
+        // worked before stops working.
+        if !is_field(rest.first(), fields) || is_step_kw(rest.first()) {
             return Ok((acc, rest));
         }
         let field_tok = rest[0].text().to_string();
@@ -620,7 +627,18 @@ fn parse_condition<'a>(
             }
 
             let val_tok = next2.unwrap();
-            let val = parse_where_value(val_tok);
+            let mut val = parse_where_value(val_tok);
+            // `is` takes a boolean.  0.7.0 compared the flag's Bool against
+            // the literal STRING "true", so `where modified is true` — the
+            // most natural spelling — silently matched nothing while the
+            // bare `where modified` worked.
+            if op_tok == "is" {
+                match val_tok.text() {
+                    "true" => val = Value::Bool(true),
+                    "false" => val = Value::Bool(false),
+                    _ => {}
+                }
+            }
             if ft == FieldType::Number && !matches!(val, Value::Num(_)) {
                 return perr(format!(
                     "gitq: '{field_tok}' is a number field; '{}' is not a number",
