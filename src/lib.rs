@@ -10,6 +10,7 @@
 
 pub mod ast;
 pub mod complete;
+pub mod complete_tui;
 pub mod exec;
 pub mod frame;
 pub mod git;

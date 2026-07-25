@@ -3,6 +3,7 @@
 use std::process::exit;
 
 use gitq::complete::{annotate, complete_candidates};
+use gitq::complete_tui::run_completer;
 use gitq::exec::exec_pipeline;
 use gitq::git::{toplevel, GitqError};
 use gitq::parse::parse_pipeline;
@@ -32,6 +33,7 @@ Flags:
   --complete      print completion candidates for the given pipeline prefix
   --scrollback        capture the current tmux pane's scrollback and print entries
   --scrollback-browse browse captured scrollback in an interactive TUI
+  --complete-tui  interactive columnar completer (prints the chosen pipeline)
   --tmux-target       with --scrollback[-browse], capture a specific tmux pane";
 
 fn usage() {
@@ -89,6 +91,21 @@ fn main() {
     if args[0] == "--complete" || args[0] == "--complete-annotated" {
         let annotated = args[0] == "--complete-annotated";
         complete(annotated, &args[1..]);
+        exit(0);
+    }
+
+    if args.iter().any(|a| a == "--complete-tui") {
+        args.retain(|a| a != "--complete-tui");
+        match run_completer(&args.join(" ")) {
+            Ok(Some(pipeline)) => println!("{pipeline}"),
+            // cancelled: print nothing, exit non-zero so the widget leaves
+            // the command line untouched
+            Ok(None) => exit(1),
+            Err(e) => {
+                eprintln!("gitq: {e}");
+                exit(1);
+            }
+        }
         exit(0);
     }
 
