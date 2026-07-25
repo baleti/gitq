@@ -13,11 +13,9 @@
 # prompt, by which point the rest of your config has finished loading.  That
 # deferral is the whole reason this can be a single file you drop anywhere.
 #
-# It can equally live in an $fpath directory as an autoloadable function
-# (a sourced file and an autoloaded function body execute identically):
-#
-#   ln -s ~/.local/share/gitq/gitq.zsh ~/.local/share/zsh/site-functions/gitq-setup
-#   autoload -Uz gitq-setup && gitq-setup
+# Do NOT put this on $fpath.  fpath means autoload: compinit scans it for
+# `#compdef` files and never sources anything, so a file placed there would
+# be installed and silently inert.  Sourcing is the only supported setup.
 #
 # What it sets up:
 #
