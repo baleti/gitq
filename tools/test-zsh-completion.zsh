@@ -10,7 +10,7 @@
 # Usage: tools/test-zsh-completion.zsh   (exits non-zero on failure)
 set -u
 here="${0:A:h}"
-eval "$(sed -n '/^_gitq_compute_prefix() {/,/^}/p' "$here/../integrations/zsh/_gitq")"
+eval "$(sed -n '/^_gitq_compute_prefix() {/,/^}/p' "$here/../integrations/zsh/gitq.zsh")"
 
 failed=0
 
@@ -66,7 +66,7 @@ compadd()      { : }
 _description() { : }
 zstyle()       { : }
 
-eval "$(sed -n '/^_gitq() {/,/^}/p' "$here/../integrations/zsh/_gitq")"
+eval "$(sed -n '/^_gitq() {/,/^}/p' "$here/../integrations/zsh/gitq.zsh")"
 
 flow() {
   local desc="$1" want="$2"; shift 2

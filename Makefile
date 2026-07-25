@@ -62,27 +62,46 @@ install: build
 	@echo "The Emacs and zsh integrations resolve gitq on \$$PATH, so they"
 	@echo "pick this up with no further steps."
 
-# Per-user zsh completion: copy _gitq into a fixed XDG-style dir.
+# Per-user zsh integration: one file, sourced from ~/.zshrc.
+#
+# There is deliberately only one target and one file.  gitq.zsh carries the
+# completion function, the TAB TUI widget and the scrollback widgets, and
+# defers everything order-sensitive to the first prompt — so it needs no
+# fpath entry, no compinit ordering, and no particular position relative to
+# other plugins.
+#
+# It goes in gitq's own data dir, NOT an fpath directory, and that is a
+# deliberate correction.  An fpath directory means *autoload*: compinit
+# scans it for `#compdef` files and will never `source` anything.  The old
+# layout put sourced widget files in ~/.local/share/zsh/completions, where
+# they sat inert — installed, on fpath, and never loaded, which is exactly
+# the bug this layout removes.  This file is neither a completion function
+# nor an autoloadable function; it is configuration to be sourced.
 #
 # `install`, not `cp`: it unlinks the destination first.  `cp` follows an
 # existing destination symlink and writes through it — and when that symlink
 # points back at this repo (as it does for anyone who installed while these
 # targets still symlinked) `cp` refuses outright with "are the same file",
 # so the upgrade path was broken.
-# Nothing system-wide, and no fpath auto-detection — always the same
-# directory, so it's predictable across machines. We only print the
-# ~/.zshrc line that's needed; we never edit the file ourselves.
+# We only print the ~/.zshrc line that's needed; we never edit the file.
 XDG_DATA_HOME ?= $(HOME)/.local/share
-ZSH_COMP_DIR ?= $(XDG_DATA_HOME)/zsh/completions
+ZSH_DIR ?= $(XDG_DATA_HOME)/gitq
 
 install-zsh:
-	@mkdir -p $(ZSH_COMP_DIR)
-	@install -m 644 $(CURDIR)/integrations/zsh/_gitq $(ZSH_COMP_DIR)/_gitq
-	@echo "Copied _gitq into $(ZSH_COMP_DIR)"
-	@echo "Add this to ~/.zshrc, BEFORE 'autoload -Uz compinit' / 'compinit':"
-	@echo "  fpath=($(ZSH_COMP_DIR) \$$fpath)"
-	@echo "If compinit already cached completions once, refresh it after adding the line:"
-	@echo "  rm -f ~/.zcompdump && exec zsh"
+	@mkdir -p $(ZSH_DIR)
+	@install -m 644 $(CURDIR)/integrations/zsh/gitq.zsh $(ZSH_DIR)/gitq.zsh
+	@echo "Copied gitq.zsh into $(ZSH_DIR)."
+	@echo "Add this one line to ~/.zshrc — anywhere, order does not matter:"
+	@echo "  source $(ZSH_DIR)/gitq.zsh"
+	@echo "Then: exec zsh"
+	@echo
+	@echo "It sets up TAB (gitq's completer TUI), M-b/M-e (scrollback), and"
+	@echo "menu completion."
+	@echo
+	@echo "Upgrading from the old three-file layout? Those files lived in an"
+	@echo "fpath dir, which only ever autoloaded _gitq and silently ignored"
+	@echo "the rest. Remove the fpath line and the old files:"
+	@echo "  rm -f $(XDG_DATA_HOME)/zsh/completions/{_gitq,gitq-complete.zsh,gitq-scrollback.zsh}"
 
 # Per-user bash completion: copy gitq.bash into the bash-completion
 # completions dir.  Far simpler than zsh — bash has no fpath-style
@@ -97,31 +116,7 @@ install-bash:
 	@echo "If your bash-completion package doesn't auto-source that dir, add"
 	@echo "to ~/.bashrc:  source $(BASH_COMP_DIR)/gitq"
 
-# Per-user zsh scrollback widgets.  Unlike _gitq these are *sourced*, not
-# autoloaded, so there's no fpath to discover — we just copy the file next
-# to _gitq (or wherever ZSH_COMP_DIR points) and print the one source line
-# to add to ~/.zshrc.
-install-zsh-scrollback:
-	@mkdir -p $(ZSH_COMP_DIR)
-	@install -m 644 $(CURDIR)/integrations/zsh/gitq-scrollback.zsh $(ZSH_COMP_DIR)/gitq-scrollback.zsh
-	@echo "Copied gitq-scrollback.zsh into $(ZSH_COMP_DIR)."
-	@echo "Add to ~/.zshrc (widgets are sourced, not autoloaded):"
-	@echo "  source $(ZSH_COMP_DIR)/gitq-scrollback.zsh"
-	@echo "Then Meta-b browses scrollback, Meta-e sends it to Emacs (both need tmux)."
-
-# gitq's own TAB completer (the `gitq --complete-tui` columnar TUI).  Like the
-# scrollback widgets this is *sourced*, and it must be sourced AFTER fzf-tab
-# so its fall-through captures fzf-tab's TAB binding.
-install-zsh-complete:
-	@mkdir -p $(ZSH_COMP_DIR)
-	@install -m 644 $(CURDIR)/integrations/zsh/gitq-complete.zsh $(ZSH_COMP_DIR)/gitq-complete.zsh
-	@echo "Copied gitq-complete.zsh into $(ZSH_COMP_DIR)."
-	@echo "Add to ~/.zshrc, AFTER sourcing fzf-tab (widgets are sourced, not autoloaded):"
-	@echo "  source $(ZSH_COMP_DIR)/gitq-complete.zsh"
-	@echo "TAB on a gitq command then opens the columnar completer; other commands are unaffected."
-
 clean:
 	$(CARGO) clean
 
-.PHONY: build test lint corpus install install-zsh install-bash \
-        install-zsh-scrollback install-zsh-complete clean
+.PHONY: build test lint corpus install install-zsh install-bash clean
