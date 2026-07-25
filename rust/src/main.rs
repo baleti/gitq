@@ -7,6 +7,10 @@ use gitq::exec::exec_pipeline;
 use gitq::git::{toplevel, GitqError};
 use gitq::parse::parse_pipeline;
 use gitq::render::{put_utf8, render_frames_sexp, render_frames_text};
+use gitq::scrollback::browse::run_browser;
+use gitq::scrollback::capture::{capture_scrollback, CaptureTarget};
+use gitq::scrollback::entry::{parse_entries_with, DEFAULT_PROMPT_REGEX};
+use gitq::scrollback::render::{render_entries_sexp, render_entries_text};
 use gitq::terminal::apply_terminal;
 
 const USAGE: &str = "\
@@ -73,12 +77,25 @@ fn main() {
         exit(0);
     }
 
-    if args.iter().any(|a| a == "--scrollback" || a == "--scrollback-browse") {
-        // The scrollback subsystem is not ported yet.  Failing loudly beats
-        // accepting the flag and doing nothing, which is the exact silence
-        // this port exists to remove.
-        eprintln!("gitq: --scrollback is not yet available in this build");
-        exit(1);
+    if args.iter().any(|a| a == "--scrollback-browse") {
+        args.retain(|a| a != "--scrollback-browse");
+        let target = take_val_flag(&mut args, "--tmux-target");
+        if let Err(GitqError(msg)) = scrollback_browse(target) {
+            eprintln!("{msg}");
+            exit(1);
+        }
+        exit(0);
+    }
+
+    if args.iter().any(|a| a == "--scrollback") {
+        args.retain(|a| a != "--scrollback");
+        let sexp = take_flag(&mut args, "--sexp");
+        let target = take_val_flag(&mut args, "--tmux-target");
+        if let Err(GitqError(msg)) = scrollback(sexp, target) {
+            eprintln!("{msg}");
+            exit(1);
+        }
+        exit(0);
     }
 
     let sexp = take_flag(&mut args, "--sexp");
@@ -150,4 +167,39 @@ fn run(sexp: bool, preview: bool, pipeline: &str) -> Result<(), GitqError> {
         (false, None) => display(),
     }
     Ok(())
+}
+
+fn capture_target(t: Option<String>) -> CaptureTarget {
+    match t {
+        Some(t) => CaptureTarget::NamedPane(t),
+        None => CaptureTarget::CurrentPane,
+    }
+}
+
+fn prompt_regex() -> String {
+    std::env::var("GITQ_SCROLLBACK_PROMPT_REGEX")
+        .unwrap_or_else(|_| DEFAULT_PROMPT_REGEX.to_string())
+}
+
+/// Capture the tmux pane's scrollback, split it into entries, and print
+/// them — human-readable, or as Emacs Lisp plists with `--sexp`.  Unlike a
+/// pipeline this needs no git repository; it reads the terminal, not git.
+fn scrollback(sexp: bool, target: Option<String>) -> Result<(), GitqError> {
+    let raw = capture_scrollback(&capture_target(target))?;
+    let entries = parse_entries_with(&prompt_regex(), &raw);
+    put_utf8(&if sexp {
+        render_entries_sexp(&entries)
+    } else {
+        render_entries_text(&entries)
+    });
+    Ok(())
+}
+
+/// Capture and launch the interactive entry browser in this terminal.  This
+/// is what the zsh `\eb` widget shells out to (wrapped in `tmux
+/// display-popup`).
+fn scrollback_browse(target: Option<String>) -> Result<(), GitqError> {
+    let raw = capture_scrollback(&capture_target(target))?;
+    let entries = parse_entries_with(&prompt_regex(), &raw);
+    run_browser(entries).map_err(|e| GitqError(format!("gitq: scrollback browser failed: {e}")))
 }
