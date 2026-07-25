@@ -6,7 +6,19 @@
 # runtime still forces the subprocess-git path, which is how the two are
 # A/B'd from a single binary.
 
-CARGO ?= cargo
+# Find cargo even when the shell hasn't been told about it.  rustup appends
+# its PATH line to ~/.profile, which zsh does not read, so a rustup install
+# is routinely invisible to a zsh user's `make` — the failure looked like a
+# missing toolchain when the toolchain was there all along.
+CARGO ?= $(shell command -v cargo 2>/dev/null || \
+                 (test -x "$(HOME)/.cargo/bin/cargo" && echo "$(HOME)/.cargo/bin/cargo"))
+
+ifeq ($(strip $(CARGO)),)
+$(error cargo not found. Install Rust from https://rustup.rs, then either \
+open a new shell or add `. "$$HOME/.cargo/env"` to your shell rc — rustup \
+only writes that line to ~/.profile, which zsh does not read. \
+Override with `make CARGO=/path/to/cargo`)
+endif
 
 build:
 	$(CARGO) build --release
