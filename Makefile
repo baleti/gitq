@@ -25,6 +25,11 @@ build:
 
 test:
 	$(CARGO) test
+	@# The zsh completer reconstructs the pipeline from the command line;
+	@# that logic has no Rust to test it, so it gets its own check.
+	@command -v zsh >/dev/null 2>&1 \
+		&& zsh tools/test-zsh-completion.zsh \
+		|| echo "(zsh not installed - skipping completion prefix tests)"
 
 lint:
 	$(CARGO) clippy --all-targets -- -D warnings
