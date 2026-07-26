@@ -272,6 +272,22 @@ fn preview_stats(frames: &[Frame]) -> String {
     parts.join("  ·  ")
 }
 
+/// Pad a line out to WIDTH so a style applied to it covers the whole row.
+///
+/// A `Line`'s style only reaches as far as its text, so highlighting a short
+/// row left the rest of the line unpainted and the selection read as ragged
+/// text rather than a block.
+fn pad_to(line: Line<'static>, width: u16) -> Line<'static> {
+    let used = line.width();
+    let want = width as usize;
+    if used >= want {
+        return line;
+    }
+    let mut spans = line.spans;
+    spans.push(Span::raw(" ".repeat(want - used)));
+    Line::from(spans)
+}
+
 /// A diff row's colour, by the prefix git gave it.  Row 0 of a frame is
 /// gitq's own header line, not diff output, so it is styled as a header.
 fn diff_style(row: usize, text: &str) -> Style {
@@ -1362,7 +1378,8 @@ fn draw(f: &mut ratatui::Frame, st: &mut CompleterState) {
                         spans.extend(styled_row(raw, diff_style(n, raw), &st.highlight));
                         let line = Line::from(spans);
                         if in_visual {
-                            line.style(Style::default().bg(Color::Rgb(40, 50, 60)))
+                            pad_to(line, pv.width)
+                                .style(Style::default().bg(Color::Rgb(40, 50, 60)))
                         } else {
                             line
                         }
@@ -1388,7 +1405,7 @@ fn draw(f: &mut ratatui::Frame, st: &mut CompleterState) {
                 // the List used to draw the selection; with a Paragraph the
                 // rows carry it themselves
                 if selected {
-                    l.style(sel)
+                    pad_to(l, pv.width).style(sel)
                 } else {
                     l
                 }
@@ -2082,6 +2099,19 @@ mod tests {
         let hl: Vec<&Span> = spans.iter().filter(|s| s.style.bg.is_some()).collect();
         assert_eq!(hl.len(), 2);
         assert_ne!(hl[0].style.bg, hl[1].style.bg, "both patterns same colour");
+    }
+
+    #[test]
+    fn a_highlighted_row_is_padded_to_the_full_width() {
+        // a Line's style reaches only as far as its text, so without padding
+        // the selection reads as ragged text instead of a block
+        let l = pad_to(Line::from("abc"), 10);
+        assert_eq!(l.width(), 10);
+        // already full or over: left alone rather than growing the line
+        assert_eq!(pad_to(Line::from("abcdefghij"), 10).width(), 10);
+        assert_eq!(pad_to(Line::from("abcdefghijkl"), 10).width(), 12);
+        // an empty row still fills, so a blank line inside a hunk is covered
+        assert_eq!(pad_to(Line::from(""), 8).width(), 8);
     }
 
     #[test]
