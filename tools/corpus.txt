@@ -184,3 +184,5 @@ c worktrees where
 q hunks /count
 q hunks where content "popup" /count
 q hunks where content "popup", revspec HEAD~20..HEAD /count
+q hunks grep "popup" /count
+q hunks grep /pop.p/ /count

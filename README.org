@@ -25,8 +25,14 @@ frames =commits via diff.hunks= gives — because searching hunks is the
 common case and commits are usually the filter rather than the subject:
 
 #+begin_example
-  gitq 'hunks where content "display-popup", revspec HEAD~20..HEAD'
+  gitq 'hunks grep "display-popup" where revspec HEAD~20..HEAD'
 #+end_example
+
+=grep= searches the text of whatever is in front of it.  On a frame that
+already carries =content= — a hunk, a line, a diff-line — it filters and
+the shape survives.  On a commit, whose text is its tree, it searches the
+tree and yields the matching lines, as it always has.  A =/slashed/=
+pattern is a regex either way.
 
 Revision ranges are a =where= condition: =commits where revspec
 main..HEAD=.  It takes git's own revspec syntax whole — =HEAD^=, =HEAD~3=,

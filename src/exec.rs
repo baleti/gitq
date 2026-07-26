@@ -71,6 +71,28 @@ pub fn exec_step(frames: Vec<Frame>, step: &Step) -> R<Vec<Frame>> {
         }
 
         Step::Grep(pat, re) => exec_grep(&frames, pat, *re),
+        Step::GrepContent(pat, re) => {
+            // same matching `where content` uses, so the two agree: a plain
+            // pattern is a substring, a /slashed/ one a regex
+            let rx = if *re {
+                Some(
+                    regex::Regex::new(pat)
+                        .map_err(|e| GitqError(format!("gitq: invalid regex '{pat}': {e}")))?,
+                )
+            } else {
+                None
+            };
+            frames
+                .into_iter()
+                .filter(|f| match f.field("content") {
+                    Some(Value::Str(c)) => match &rx {
+                        Some(re) => re.is_match(&c),
+                        None => c.contains(pat.as_str()),
+                    },
+                    _ => false,
+                })
+                .collect()
+        }
         Step::Pickaxe(pat, re) => exec_pickaxe(frames, pat, *re),
 
         Step::Path(pat) => frames
