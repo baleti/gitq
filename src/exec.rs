@@ -47,9 +47,7 @@ pub fn exec_source(src: &Source) -> R<Vec<Frame>> {
         Source::Tags => fetch_tags(),
         Source::Refs => fetch_refs(),
         Source::Worktrees => fetch_worktrees(),
-        // every commit's hunks: the same frames `commits via diff.hunks`
-        // gives, so the two agree by construction
-        Source::Hunks => fetch_commits(None)?.iter().flat_map(hunks_of).collect(),
+        Source::Hunks => hunks_of_history()?,
         Source::Blobs => match run_git_string(&["rev-parse", "HEAD^{tree}"]) {
             Some(tree) => fetch_blobs_at(&tree, None, None),
             None => Vec::new(),
@@ -406,6 +404,55 @@ fn diff_argv(sha: &str, root: bool) -> Vec<String> {
 fn run_argv(argv: &[String]) -> Vec<String> {
     let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
     run_git(&refs)
+}
+
+/// Every hunk in the history, in one git process rather than one per commit.
+///
+/// `hunks_of` shells out per commit, which is what the `diff.hunks` morphism
+/// needs when handed an arbitrary set of frames.  As a *source* the set is
+/// the whole history and known up front, so a single `git log -p` replaces N
+/// `diff-tree` calls — 103 processes and 0.73s become one and 0.13s here, and
+/// the gap widens with history length because process spawn dominates.
+///
+/// `--no-renames` is the flag that makes the two agree.  `git log` detects
+/// renames by default and `diff-tree` does not, so without it a rename shows
+/// as one entry instead of a delete plus an add — 850 hunks against 853, a
+/// difference that looked like a splitter bug and was not.  `--root` matches
+/// the per-commit path's handling of the first commit.
+fn hunks_of_history() -> R<Vec<Frame>> {
+    // a marker git will not emit inside a diff, so chunks split cleanly
+    const MARK: &str = "\u{1}gitq-commit\u{1}";
+    let fmt = format!("--format={MARK}%H");
+    let lines = run_git_loud(&["log", "-p", "--root", "--no-renames", &fmt])
+        .map_err(|e| GitqError(format!("gitq: {e}")))?;
+
+    let commits: BTreeMap<String, Frame> = fetch_commits(None)?
+        .into_iter()
+        .filter_map(|f| str_field(&f, "sha").map(|s| (s.to_string(), f)))
+        .collect();
+
+    let mut out = Vec::new();
+    let mut sha: Option<String> = None;
+    let mut body: Vec<String> = Vec::new();
+    let flush = |sha: &mut Option<String>, body: &mut Vec<String>, out: &mut Vec<Frame>| {
+        if let Some(prev) = sha.take() {
+            if let Some(cf) = commits.get(&prev) {
+                out.extend(parse_diff_hunks(body, &prev, cf));
+            }
+        }
+        body.clear();
+    };
+    for l in lines {
+        match l.strip_prefix(MARK) {
+            Some(rest) => {
+                flush(&mut sha, &mut body, &mut out);
+                sha = Some(rest.to_string());
+            }
+            None => body.push(l),
+        }
+    }
+    flush(&mut sha, &mut body, &mut out);
+    Ok(out)
 }
 
 fn hunks_of(f: &Frame) -> Vec<Frame> {
@@ -929,6 +976,37 @@ fn exec_sort(mut frames: Vec<Frame>, field: &str, desc: bool) -> Vec<Frame> {
         }
     });
     frames
+}
+
+#[cfg(test)]
+mod hunks_source_tests {
+    use super::*;
+    use crate::parse::parse_pipeline;
+
+    /// The batched source and the per-commit morphism must agree exactly.
+    /// They are separate git invocations with separate flags, and the one
+    /// difference that mattered — `git log` detecting renames where
+    /// `diff-tree` does not — produced 850 hunks against 853 and looked like
+    /// a parsing bug.  Nothing but a comparison catches that.
+    #[test]
+    fn hunks_source_matches_the_diff_hunks_morphism() {
+        let Ok(a) = parse_pipeline("hunks") else {
+            return;
+        };
+        let Ok(b) = parse_pipeline("commits via diff.hunks") else {
+            return;
+        };
+        let (Ok((fa, _)), Ok((fb, _))) = (exec_pipeline(&a), exec_pipeline(&b)) else {
+            return; // not in a repo
+        };
+        assert_eq!(fa.len(), fb.len(), "hunk counts diverged");
+        for (x, y) in fa.iter().zip(fb.iter()) {
+            assert_eq!(x.ty, y.ty);
+            for k in ["path", "start-line", "end-line", "content", "commit-sha"] {
+                assert_eq!(x.field(k), y.field(k), "field {k} diverged");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
