@@ -72,9 +72,6 @@ pub enum Step {
     /// evaluated left to right, so `[0:3,-1]` is "the first three, then the
     /// last" and `[::-1]` reverses.
     Slice(Vec<Sel>),
-    Skip(usize),
-    First,
-    Last,
     /// Field, descending.
     Sort(String, bool),
     /// Restrict to commits reachable per a raw revspec (mid-pipeline `in`).

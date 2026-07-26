@@ -234,7 +234,7 @@ values are matched literally; /regex/ literals as regexps."
               (pop tokens)
               (when tokens (push (gitq--term-to-regexp (pop tokens)) res)))
              ((and next (not (member next '("via" "where" "grep" "pickaxe" "path" "pick"
-                                            "take" "skip" "first" "last" "sort" ","))))
+                                            "sort" ","))))
               (push (gitq--term-to-regexp (pop tokens)) res))))))))
     (delete-dups (delq nil (nreverse res)))))
 
@@ -1030,7 +1030,7 @@ PIPELINE syntax:  source [step...] [/terminal]
 
 Sources:   commits [in RANGE]  HEAD  BRANCH  branches  tags  refs  worktrees  blobs
 Steps:     via MORPHISM-PATH  where COND[,COND...]  grep PATTERN  pickaxe PATTERN
-           path GLOB  pick FIELD[,...]  [SEL]  skip N  first  last  sort [-]FIELD
+           path GLOB  pick FIELD[,...]  [SEL]  sort [-]FIELD
 Terminals: /show  /copy  /insert  /count  /branch-off [NAME]  /amend [no-edit|MSG]
            /squash [MSG]  /reword [MSG]  /remove  /delete  /commit [MSG]
            /stage  /mark [LABEL]  /worktree [PATH]

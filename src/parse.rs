@@ -8,7 +8,7 @@
 //!            | "branches" | "tags" | "refs" | "worktrees" | "blobs"
 //! step     ::= "via" MORPHISM-PATH | "where" conditions | "grep" PATTERN
 //!            | "pickaxe" PATTERN ["regex"] | "path" GLOB
-//!            | "pick" FIELD[,...] | "[" SELECTORS "]" | "skip" N
+//!            | "pick" FIELD[,...] | "[" SELECTORS "]"
 //!            | "first" | "last" | "sort" ["-"]FIELD
 //!            | "context" N [PATTERN] | "in" range-tokens
 //! terminal ::= "/show" | "/copy" | ... (the closed terminal registry)
@@ -329,14 +329,6 @@ pub fn parse_step<'a>(
             let new_fields = picked.clone();
             Ok((vec![Step::Pick(picked)], remaining, new_fields))
         }
-
-        "skip" => {
-            let (n, rest) = parse_count(toks, "skip")?;
-            Ok((vec![Step::Skip(n)], rest, f))
-        }
-
-        "first" => Ok((vec![Step::First], toks, f)),
-        "last" => Ok((vec![Step::Last], toks, f)),
 
         "in" => {
             // Mid-pipeline range restriction; needs a commit-identifying
@@ -1114,12 +1106,15 @@ mod tests {
 
     #[test]
     fn counts_reject_non_numbers() {
-        err("commits skip", "requires a number");
-        err("commits skip abc", "requires a number");
-        err("commits skip 5x", "requires a number");
-        assert_eq!(ok("commits skip 3").steps, vec![Step::Skip(3)]);
-        // `take` is gone: positional selection replaced it
-        err("commits take 3", "expected step keyword");
+        // take/skip/first/last are gone: positional selection replaced them
+        for old in [
+            "commits take 3",
+            "commits skip 3",
+            "commits first",
+            "commits last",
+        ] {
+            err(old, "expected step keyword");
+        }
     }
 
     // --- positional selection, and its ambiguity with regex --------------

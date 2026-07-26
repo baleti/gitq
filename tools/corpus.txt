@@ -87,10 +87,10 @@ q commits sort author
 q commits sort -author
 q commits sort sha
 q commits [0:2]
-q commits skip 2
-q commits first
-q commits last
-q commits [0:3] skip 1
+q commits [2:]
+q commits [0]
+q commits [-1]
+q commits [1:3]
 q commits pick sha
 q commits pick sha,author
 q commits pick author,date,message

@@ -86,9 +86,6 @@ pub fn exec_step(frames: Vec<Frame>, step: &Step) -> R<Vec<Frame>> {
             let idx = crate::slice::positions(sels, frames.len()).map_err(GitqError)?;
             idx.into_iter().map(|i| frames[i].clone()).collect()
         }
-        Step::Skip(n) => frames.into_iter().skip(*n).collect(),
-        Step::First => frames.into_iter().take(1).collect(),
-        Step::Last => frames.into_iter().next_back().into_iter().collect(),
         Step::Sort(field, desc) => exec_sort(frames, field, *desc),
 
         Step::InRange(revspec) => {

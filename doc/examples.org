@@ -232,7 +232,7 @@ parse-time error:
 #+end_example
 
 That last one matters when searching messages for words that are also gitq
-keywords (=take=, =first=, =sort=, ...): quote them —
+keywords (=where=, =sort=, =pick=, ...): quote them —
 =commits where message "take"=.  There is no explicit =contains= keyword to
 separate field from value, so this quoting rule is what stands between
 "the where-clause ends here" and "the literal word take."

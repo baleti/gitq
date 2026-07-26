@@ -25,7 +25,12 @@ Positional selection uses Python's slicing, written as a bracket step:
 other one, and — beyond what Python spells — =[0:3,7,-2:]= a union of
 selectors, evaluated left to right.  Ranges are half-open and clamp
 (=[0:1000]= on ten results is ten results); a bare index that does not
-exist is an error, as in Python.  It replaces =take=.
+exist is an error, as in Python.
+
+It replaces =take=, =skip=, =first= and =last=, which were each one case
+of it: =[:N]=, =[N:]=, =[0]=, =[-1]=.  Note the Python reading rather than
+a first/last one — =[3:]= is everything *after* the first three, and the
+last three is =[-3:]=.
 
 Brackets are punctuation, so their reading depends on where they sit:
 whitespace ends a value, which makes =where sha regex ^5 [0:1]= a
