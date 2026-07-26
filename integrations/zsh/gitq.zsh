@@ -154,6 +154,24 @@ _gitq() {
 # Like fzf's widgets, the TUI draws on /dev/tty and prints only the chosen
 # pipeline to stdout, which we capture and put back on the line.
 
+# The pipeline inside a `gitq …` command line: everything after the command
+# word, minus a wrapping quote, so gitq's tokenizer sees the pipeline itself.
+#
+# A function rather than inline widget code because ZLE cannot be driven
+# from a test — a widget needs a terminal, this needs nothing.
+_gitq_pipeline_of_line() {
+  emulate -L zsh
+  setopt localoptions extendedglob
+  local pipeline=${1#*gitq}
+  pipeline=${pipeline##[[:space:]]#}
+  local lead=${pipeline[1]}
+  if [[ $lead == "'" || $lead == '"' ]]; then
+    pipeline=${pipeline#$lead}
+    pipeline=${pipeline%$lead}
+  fi
+  print -r -- "$pipeline"
+}
+
 gitq-complete-tui-widget() {
   emulate -L zsh
   setopt localoptions extendedglob
@@ -169,14 +187,8 @@ gitq-complete-tui-widget() {
     return
   fi
 
-  # The pipeline is everything after the `gitq` word, minus a wrapping quote.
-  local pipeline=${LBUFFER#*gitq}
-  pipeline=${pipeline##[[:space:]]#}
-  local lead=${pipeline[1]}
-  if [[ $lead == "'" || $lead == '"' ]]; then
-    pipeline=${pipeline#$lead}
-    pipeline=${pipeline%$lead}
-  fi
+  local pipeline
+  pipeline=$(_gitq_pipeline_of_line "$LBUFFER")
 
   # Run in a tmux popup when we can.  A popup is sized against the *client*,
   # not the pane, so the completer gets the whole terminal however small the
