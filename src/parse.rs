@@ -170,10 +170,25 @@ fn parse_rest(mut toks: &[Token], mut fields: Vec<String>) -> P<(Vec<Step>, Opti
                 toks = &toks[1..];
             }
             other => {
-                return perr(format!(
-                    "gitq: expected step keyword or /terminal, got '{}'",
-                    other.display()
-                ))
+                let got = other.display();
+                // The commonest cause is an unquoted value with a space in
+                // it: `where date 2026-07-25 10:10:24 +0100` tokenizes as
+                // three words, and only the first reaches the condition.  Say
+                // so when the stray token looks like part of a value rather
+                // than a mistyped keyword, so the fix is in the message
+                // instead of the manual.
+                let value_ish = got
+                    .chars()
+                    .any(|c| c.is_ascii_digit() || matches!(c, ':' | '+'));
+                return perr(if value_ish {
+                    format!(
+                        "gitq: expected step keyword or /terminal, got '{got}' \
+                         — if this is part of a value, quote the whole value: \
+                         where date \"2026-07-25 10:10:24 +0100\""
+                    )
+                } else {
+                    format!("gitq: expected step keyword or /terminal, got '{got}'")
+                });
             }
         }
     }
@@ -1188,6 +1203,23 @@ mod tests {
         assert!(!p.steps.iter().any(|s| matches!(s, Step::Slice(_))));
         let p = ok("HEAD via tree.entries[Blob]");
         assert!(!p.steps.iter().any(|s| matches!(s, Step::Slice(_))));
+    }
+
+    #[test]
+    fn an_unquoted_value_with_spaces_is_told_to_quote_it() {
+        // the tokenizer splits on whitespace, so only `2026-07-25` reaches
+        // the condition and the rest lands where a step should be
+        err(
+            "commits where date 2026-07-25 10:10:24 +0100",
+            "quote the whole value",
+        );
+    }
+
+    #[test]
+    fn a_plain_mistyped_keyword_does_not_get_the_quoting_hint() {
+        let e = parse_pipeline("commits nonsense").unwrap_err().to_string();
+        assert!(e.contains("expected step keyword"), "{e}");
+        assert!(!e.contains("quote the whole value"), "noisy hint: {e}");
     }
 
     #[test]
