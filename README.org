@@ -294,9 +294,9 @@ the pipeline the highlighted candidate would produce on the right:
   work, as in vim's window commands): the result frames become a selectable
   list,
   and =↵= *pivots* onto the highlighted one — a fresh column
-  re-roots on that object (a commit by its SHA, a hunk re-derived through
-  =diff.hunks=, …), so you drill from a query's results into a new query
-  rooted at one of them.  Same object-graph walk as the Emacs
+  narrows the query to it positionally (=hunks [0..5] [1]=), one row or
+  many alike, so you drill from a query's results into a query over just
+  those.  Same object-graph walk as the Emacs
   =gitq-results-refine= =TAB=, and the same anchoring grammar.
 - =M-x= opens a command palette for actions that are not part of a pipeline
   — currently =scrollback-browse=.  Pipeline steps deliberately stay in the

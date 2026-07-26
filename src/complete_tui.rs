@@ -46,7 +46,7 @@ use ratatui::Terminal;
 
 use crate::complete::{annotate, complete_candidates};
 use crate::exec::exec_pipeline;
-use crate::frame::{Frame, FrameType, Value};
+use crate::frame::Frame;
 use crate::git::{toplevel, GitqError};
 use crate::parse::parse_pipeline;
 use crate::render::{render_frame_line, render_frames_text};
@@ -130,107 +130,6 @@ fn fuzzy_score(query: &str, cand: &str) -> Option<i32> {
         Some(score - (c.len() as i32 - q.len() as i32))
     } else {
         None
-    }
-}
-
-// --- anchoring a drilled frame (the Rust twin of gitq--frame-anchor) ------
-
-fn quote_value(v: &Value) -> String {
-    match v {
-        Value::Num(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Str(s) => format!("{:?}", s.as_ref()),
-    }
-}
-
-/// A `where` clause pinning FRAME by the given (field, label) equalities,
-/// using only the fields the frame actually carries — so it always
-/// type-checks against the frame's own shape.
-fn identity_clause(frame: &Frame, specs: &[(&str, &str)]) -> Option<String> {
-    let conds: Vec<String> = specs
-        .iter()
-        .filter_map(|(fname, label)| {
-            frame
-                .field(fname)
-                .map(|v| format!("{} == {}", label, quote_value(&v)))
-        })
-        .collect();
-    (!conds.is_empty()).then(|| format!("where {}", conds.join(", ")))
-}
-
-/// BASE narrowed to FRAME, or `None` if there is no BASE to narrow.
-fn pinned(base: &str, frame: &Frame, specs: &[(&str, &str)]) -> Option<String> {
-    let base = base.trim();
-    if base.is_empty() {
-        return None;
-    }
-    match identity_clause(frame, specs) {
-        Some(c) => Some(format!("{base} {c}")),
-        None => Some(base.to_string()),
-    }
-}
-
-/// FRAME re-derived from its own commit through MORPHISM, pinned by SPECS —
-/// falling back to pinning inside BASE when it has no owning commit.
-fn derived_anchor(
-    frame: &Frame,
-    morphism: &str,
-    specs: &[(&str, &str)],
-    base: &str,
-) -> Option<String> {
-    match frame.commit_sha() {
-        Some(sha) => {
-            let clause = identity_clause(frame, specs)
-                .map(|c| format!(" {c}"))
-                .unwrap_or_default();
-            Some(format!("{sha} via {morphism}{clause}"))
-        }
-        None => pinned(base, frame, specs),
-    }
-}
-
-/// A pipeline whose result is just FRAME, to continue the query from.  The
-/// anchor preserves the frame's shape, not only its identity — a commit is
-/// its own SHA (a source in its own right), a hunk is re-derived through
-/// `diff.hunks` so `via commit`/`via history` stay available, and anything
-/// with no standalone source form is pinned inside BASE.
-fn frame_anchor(frame: &Frame, base: &str) -> Option<String> {
-    let str_field = |name: &str| {
-        frame
-            .field(name)
-            .and_then(|v| v.as_str().map(str::to_string))
-    };
-    match frame.ty {
-        FrameType::Commit => str_field("sha"),
-        FrameType::Ref => str_field("name").or_else(|| str_field("sha")),
-        FrameType::Hunk => derived_anchor(
-            frame,
-            "diff.hunks",
-            &[("path", "path"), ("start-line", "start-line")],
-            base,
-        ),
-        FrameType::DiffLine => derived_anchor(
-            frame,
-            "diff.lines",
-            &[
-                ("path", "path"),
-                ("line-number", "line-number"),
-                ("sign", "sign"),
-            ],
-            base,
-        ),
-        FrameType::Blob => pinned(base, frame, &[("sha", "sha"), ("path", "path")]),
-        FrameType::Line => pinned(
-            base,
-            frame,
-            &[
-                ("commit-sha", "commit-sha"),
-                ("path", "path"),
-                ("line-number", "line-number"),
-            ],
-        ),
-        FrameType::Worktree => pinned(base, frame, &[("path", "path")]),
-        _ => pinned(base, frame, &[]),
     }
 }
 
@@ -788,14 +687,17 @@ impl CompleterState {
     fn pivot(&mut self) {
         // what produced the rows on screen, which is not always `effective()`
         let base = self.frames_from.clone();
-        let explicit = self.visual_from.is_some() || !self.marked.is_empty();
-        let next = if explicit && !base.trim().is_empty() {
+        // Always positional, whether one row or many.  The alternative was to
+        // re-root a single frame on its own identity — for a hunk that meant
+        // `SHA via diff.hunks where path == "...", start-line == 61`, which
+        // says the same thing as `[1]` at ten times the length and breaks the
+        // moment a field it pins on is missing.  Position keeps the frame
+        // shape just as well, so `via history` still works after it.
+        let next = if base.trim().is_empty() {
+            None
+        } else {
             self.selection_step()
                 .map(|sel| format!("{} {sel}", base.trim()))
-        } else {
-            self.frames
-                .get(self.preview_sel)
-                .and_then(|f| frame_anchor(f, &base))
         };
         if let Some(n) = next {
             // Both a selection and a single-object drill move the column
@@ -1369,6 +1271,7 @@ fn draw_palette(f: &mut ratatui::Frame, area: ratatui::layout::Rect, st: &Comple
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::{FrameType, Value};
 
     fn commit_frame(sha: &str) -> Frame {
         Frame::new(FrameType::Commit, [("sha", Value::from(sha))])
@@ -1391,45 +1294,6 @@ mod tests {
     fn fuzzy_prefers_prefix() {
         assert!(fuzzy_score("wh", "where").unwrap() > fuzzy_score("wh", "with-h").unwrap());
         assert_eq!(fuzzy_score("zz", "where"), None);
-    }
-
-    #[test]
-    fn anchor_of_a_commit_is_its_bare_sha() {
-        let f = commit_frame("abc123");
-        assert_eq!(
-            frame_anchor(&f, "commits where author a"),
-            Some("abc123".into())
-        );
-    }
-
-    #[test]
-    fn anchor_of_a_hunk_re_derives_through_diff_hunks() {
-        let f = Frame::new(
-            FrameType::Hunk,
-            [
-                ("commit-sha", Value::from("abc123")),
-                ("path", Value::from("src/main.rs")),
-                ("start-line", Value::Num(42)),
-            ],
-        );
-        assert_eq!(
-            frame_anchor(&f, "commits"),
-            Some("abc123 via diff.hunks where path == \"src/main.rs\", start-line == 42".into())
-        );
-    }
-
-    #[test]
-    fn anchor_of_a_blob_pins_inside_the_base() {
-        let f = Frame::new(
-            FrameType::Blob,
-            [("sha", Value::from("deadbeef")), ("path", Value::from("x"))],
-        );
-        assert_eq!(
-            frame_anchor(&f, "HEAD via tree.blobs"),
-            Some("HEAD via tree.blobs where sha == \"deadbeef\", path == \"x\"".into())
-        );
-        // no base to pin into => nothing
-        assert_eq!(frame_anchor(&f, ""), None);
     }
 
     #[test]
@@ -1511,7 +1375,7 @@ mod tests {
         st.handle(KeyCode::Char('w'), KeyModifiers::CONTROL);
         st.handle(KeyCode::Char('l'), KeyModifiers::NONE);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(st.active().line, "cafef00d ");
+        assert_eq!(st.active().line, "commits [0] ");
 
         // and the drilled line is ordinary editable text from here
         st.handle(KeyCode::Char('u'), KeyModifiers::CONTROL);
@@ -1649,7 +1513,7 @@ mod tests {
         assert_eq!(st.focus, Focus::Preview);
         st.handle(KeyCode::Enter, KeyModifiers::NONE); // pivot on the frame
         assert_eq!(st.focus, Focus::Columns);
-        assert_eq!(st.active().line, "cafef00d ");
+        assert_eq!(st.active().line, "commits [0] ");
     }
 
     #[test]
@@ -1926,6 +1790,21 @@ mod tests {
     }
 
     #[test]
+    fn one_hunk_pivots_to_an_index_not_an_identity_anchor() {
+        // regression: a single hunk used to produce
+        //   SHA via diff.hunks where path == "...", start-line == 61
+        // which says what `[1]` says, at length, and breaks if a pinned field
+        // is absent
+        let mut st = CompleterState::new("hunks ");
+        st.frames = vec![commit_frame("aaaa"), commit_frame("bbbb")];
+        st.frames_from = "hunks".into();
+        ctrl_w(&mut st, 'l');
+        down(&mut st, 1);
+        st.handle(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(st.active().line, "hunks [1] ");
+    }
+
+    #[test]
     fn a_selection_narrows_the_column_it_came_from_without_opening_one() {
         let mut st = previewing(8);
         st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
@@ -1952,11 +1831,11 @@ mod tests {
     }
 
     #[test]
-    fn pivoting_with_no_selection_still_re_roots_on_the_object() {
-        // the single-object drill must not regress into a slice
+    fn pivoting_with_no_selection_uses_the_cursor_row_as_the_selection() {
+        // one row is still a positional selection, not an identity anchor
         let mut st = previewing(3);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(st.active().line, "sha0 ");
+        assert_eq!(st.active().line, "commits [0] ");
     }
 
     #[test]
