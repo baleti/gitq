@@ -543,6 +543,53 @@ fn clause_ends(t: Option<&Token>, fields: &[String]) -> bool {
     t.is_none() || matches!(t, Some(Token::Comma)) || is_field(t, fields) || is_terminal(t)
 }
 
+/// A clock token: `10:10` or `10:10:24`.
+fn is_clock(t: &Token) -> bool {
+    let Token::Word(w) = t else { return false };
+    let parts: Vec<&str> = w.split(':').collect();
+    (2..=3).contains(&parts.len())
+        && parts
+            .iter()
+            .all(|p| (1..=2).contains(&p.len()) && p.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// A UTC offset token: `+0100`, `-0500`.
+fn is_offset(t: &Token) -> bool {
+    let Token::Word(w) = t else { return false };
+    w.len() == 5
+        && matches!(w.as_bytes()[0], b'+' | b'-')
+        && w[1..].chars().all(|c| c.is_ascii_digit())
+}
+
+/// Absorb a clock (and its UTC offset) that follows a date value.
+///
+/// git prints dates as `2026-07-25 10:10:24 +0100`, so that is the shape
+/// people paste back in — but whitespace makes it three tokens, and only the
+/// first reached the condition.  Demanding quotes for the one format the tool
+/// itself emits is a poor trade, so on a date field the pieces are rejoined.
+///
+/// Scoped to date fields and to tokens actually shaped like a clock, so no
+/// other field can swallow the step that follows it.
+fn absorb_clock(ft: FieldType, val: Value, rest: &[Token]) -> (Value, &[Token]) {
+    if ft != FieldType::Date {
+        return (val, rest);
+    }
+    let Value::Str(s) = &val else {
+        return (val, rest);
+    };
+    if !rest.first().is_some_and(is_clock) {
+        return (val, rest);
+    }
+    let mut text = format!("{} {}", s.as_ref(), rest[0].text());
+    let mut r = &rest[1..];
+    if r.first().is_some_and(is_offset) {
+        text.push(' ');
+        text.push_str(r[0].text());
+        r = &r[1..];
+    }
+    (Value::Str(text.as_str().into()), r)
+}
+
 fn parse_condition<'a>(
     field_tok: &str,
     rest: &'a [Token],
@@ -676,13 +723,14 @@ fn parse_condition<'a>(
                     }
                 }
             }
+            let (val, after) = absorb_clock(ft, val, &rest1[1..]);
             return Ok((
                 Cond {
                     field: field_tok.to_string(),
                     op,
                     value: val,
                 },
-                &rest1[1..],
+                after,
             ));
         }
     }
@@ -704,13 +752,14 @@ fn parse_condition<'a>(
                 next.display()
             ));
         }
+        let (val, after) = absorb_clock(ft, val, &rest[1..]);
         return Ok((
             Cond {
                 field: field_tok.to_string(),
                 op: iop,
                 value: val,
             },
-            &rest[1..],
+            after,
         ));
     }
 
@@ -1206,11 +1255,62 @@ mod tests {
     }
 
     #[test]
-    fn an_unquoted_value_with_spaces_is_told_to_quote_it() {
-        // the tokenizer splits on whitespace, so only `2026-07-25` reaches
-        // the condition and the rest lands where a step should be
+    fn a_date_absorbs_the_clock_that_follows_it() {
+        // git prints `2026-07-25 10:10:24 +0100`; pasting it back must work
+        let p = ok("commits where date 2026-07-25 10:10:24");
+        match &p.steps[0] {
+            Step::Where(cs) => assert_eq!(
+                cs[0].value,
+                Value::Str("2026-07-25 10:10:24".into()),
+                "the clock was dropped or left as a separate token"
+            ),
+            other => panic!("expected a where step, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_date_absorbs_the_utc_offset_too() {
+        let p = ok("commits where date 2026-07-25 10:10:24 +0100");
+        match &p.steps[0] {
+            Step::Where(cs) => {
+                assert_eq!(cs[0].value, Value::Str("2026-07-25 10:10:24 +0100".into()))
+            }
+            other => panic!("expected a where step, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn absorbing_a_clock_does_not_swallow_the_step_after_it() {
+        let p = ok("commits where date 2026-07-25 10:10:24 [0..1]");
+        assert_eq!(p.steps.len(), 2);
+        assert!(matches!(p.steps[1], Step::Slice(_)));
+    }
+
+    #[test]
+    fn only_clock_shaped_tokens_are_absorbed_by_a_date() {
+        // a following step must still be a step
+        let p = ok("commits where date 2026-07-25 sort -date");
+        assert_eq!(p.steps.len(), 2);
+        assert!(matches!(p.steps[1], Step::Sort(_, _)));
+    }
+
+    #[test]
+    fn only_date_fields_absorb_a_clock() {
+        // scoped deliberately: on a string field the clock is still a stray
+        // token, and saying so beats silently gluing it onto the value
         err(
-            "commits where date 2026-07-25 10:10:24 +0100",
+            "commits where message fix 10:10:24",
+            "expected step keyword",
+        );
+    }
+
+    #[test]
+    fn an_unquoted_value_with_spaces_is_told_to_quote_it() {
+        // the tokenizer splits on whitespace, so only `fix` reaches the
+        // condition and the rest lands where a step should be.  (A *date*
+        // field rejoins its clock; every other field still needs quotes.)
+        err(
+            "commits where message fix 10:10:24",
             "quote the whole value",
         );
     }
