@@ -269,10 +269,10 @@ the pipeline the highlighted candidate would produce on the right:
   next position, so the pipeline grows one token at a time in the line
   above; =⌫= on an empty query undoes the last move — a committed token, a
   preview selection or a drill alike.
-- =v= starts a visual range in the preview and movement extends it; =m=
-  banks the range and leaves visual mode, so several disjoint runs can be
-  gathered before acting; =m= with no range toggles the row under the
-  cursor.  =↵= then acts on the whole selection, which becomes a
+- =v= starts a visual range in the preview and movement extends it;
+  =SPC= banks the range and leaves visual mode, so several disjoint runs
+  can be gathered before acting; =SPC= with no range toggles the row under
+  the cursor.  =↵= then acts on the whole selection, which becomes a
   positional step on the query you are in (=commits [0..3,5..7]=) rather
   than hidden state.
 - =^L= steps into the preview and =^H= back (=^w l= / =^w h= / =^w w= also
