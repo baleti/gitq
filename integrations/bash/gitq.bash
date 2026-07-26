@@ -1,50 +1,59 @@
-# bash completion for the gitq pipeline CLI.
+# gitq — bash integration.
 #
-# Install: `make install-bash` in the repo root (copies this file into
-# ${XDG_DATA_HOME:-~/.local/share}/bash-completion/completions/gitq), or
-# source it from ~/.bashrc:
-#   source /path/to/gitq/integrations/bash/gitq.bash
+# Install: `make install-bash` in the repo root, or source it from ~/.bashrc:
+#   source ~/.local/share/gitq/gitq.bash
 #
-# How it works:
-#   gitq takes its whole pipeline as a single string argument, so
-#   completion happens *within* that one argument, exactly like the zsh
-#   integration (integrations/zsh/_gitq).  We hand the pipeline text to
-#   `gitq --complete PREFIX`, which prints the candidate set for that
-#   position, one per line; gitq's tokenizer finds the token boundary.
-#   No grammar is duplicated shell-side.
+# TAB on a `gitq …` command line opens gitq's columnar completer TUI, exactly
+# as it does under zsh.  Every other command's TAB is untouched.
 #
-#   The wrinkle is bash word-splitting.  When the pipeline is a single
-#   quoted argument (`gitq 'commits wh<TAB>`), readline groups the whole
-#   thing into one COMP_WORD, so the "word" it replaces is the entire
-#   `'commits wh`, not just `wh` — the replacement text therefore has to
-#   carry the already-typed head back with it.  When the pipeline is left
-#   unquoted (`gitq commits wh<TAB>`), readline splits normally and only
-#   `wh` is replaced.  We compute the head to preserve relative to the
-#   current word, so both cases produce the right replacement.
+# That last point is why this is a *completion function* and not a key
+# binding.  bash has no equivalent of zsh's `zle ${GITQ_FALLBACK_TAB}` —
+# nothing that means "otherwise do whatever TAB normally does" — so binding
+# TAB with `bind -x` would replace completion globally and break every other
+# command.  `complete -F` is per-command, so gitq takes over its own TAB and
+# nothing else's.
+#
+# The TUI needs nothing from the shell: it draws on /dev/tty and prints the
+# chosen pipeline to stdout.  This captures that and offers it as the single
+# completion, which bash substitutes into the line.
+#
+# Inside tmux it runs in a `display-popup`, sized against the client rather
+# than the pane, so it fills the terminal however small the pane it was
+# invoked from.  Outside tmux it uses the alternate screen.
+#
+# Opt-outs, set before sourcing:
+#   GITQ_NO_TAB=1                          plain candidate completion instead
+#   GITQ_POPUP_WIDTH / GITQ_POPUP_HEIGHT   popup geometry (default 100%/100%)
 
-_gitq_complete() {
-    # The pipeline text so far, reconstructed from the raw line (COMP_WORDS
-    # is lossy for the quoting gitq cares about).  Everything after the
-    # command word is the single pipeline argument.
+# The pipeline typed so far: everything after the command word, minus a
+# wrapping quote, so gitq's tokenizer sees the pipeline itself.
+_gitq_pipeline_of_line() {
     local line="${COMP_LINE:0:COMP_POINT}"
     local pipeline="${line#* }"
     [[ "$pipeline" == "$line" ]] && pipeline=""
-    # Strip a leading quote so gitq's tokenizer sees the pipeline itself.
     pipeline="${pipeline#[\"\']}"
+    printf '%s' "$pipeline"
+}
+
+# Candidate completion, the same registry zsh and Emacs use — no grammar is
+# duplicated shell-side.  Used when the TUI is switched off.
+_gitq_plain_complete() {
+    local pipeline
+    pipeline=$(_gitq_pipeline_of_line)
 
     local IFS=$'\n'
     local cands
     cands=$(gitq --complete "$pipeline" 2>/dev/null) || return 0
     [[ -z "$cands" ]] && return 0
 
-    # The word readline will replace, and — within it — the partial token
-    # being completed plus the head (prior tokens / opening quote) to keep.
+    # bash word-splitting: with the pipeline quoted (`gitq 'commits wh<TAB>`)
+    # readline groups it all into one word, so the replacement has to carry
+    # the already-typed head back with it.  Unquoted, only the last token is
+    # replaced.
     local w="${COMP_WORDS[COMP_CWORD]}"
     local partial="${w##* }"
     local whead=""
     [[ "$partial" != "$w" ]] && whead="${w% *} "
-    # Preserve an opening quote that sits on the partial token itself, but
-    # match candidates against the unquoted text.
     local qlead=""
     case "$partial" in
         \'*) qlead="'"; partial="${partial#\'}" ;;
@@ -58,4 +67,48 @@ _gitq_complete() {
     done
 }
 
-complete -o default -F _gitq_complete gitq
+_gitq_complete() {
+    if [[ -n ${GITQ_NO_TAB-} ]] || ! command -v gitq >/dev/null 2>&1; then
+        _gitq_plain_complete
+        return
+    fi
+
+    local pipeline
+    pipeline=$(_gitq_pipeline_of_line)
+
+    # stdout comes back through a file: inside a popup the command runs in a
+    # separate pane, so its stdout cannot be read from here.
+    local tmp
+    tmp=$(mktemp "${TMPDIR:-/tmp}/gitq-tui.XXXXXX") || return
+    local bin
+    bin=$(command -v gitq)
+
+    if [[ -n ${TMUX-} ]] && command -v tmux >/dev/null 2>&1; then
+        # an ABSOLUTE path: display-popup runs its command with the tmux
+        # *server's* environment, not this shell's, so a gitq on a PATH set
+        # in ~/.bashrc is simply not found and the popup dies with 127
+        tmux display-popup -B -E \
+            -w "${GITQ_POPUP_WIDTH:-100%}" -h "${GITQ_POPUP_HEIGHT:-100%}" \
+            "$(printf %q "$bin") --complete-tui $(printf %q "$pipeline") > $(printf %q "$tmp")" \
+            2>/dev/null
+    else
+        "$bin" --complete-tui "$pipeline" > "$tmp" 2>/dev/null
+    fi
+
+    local result
+    result=$(<"$tmp")
+    rm -f "$tmp"
+
+    if [[ -n $result ]]; then
+        # one completion replacing the whole pipeline argument, quoted so a
+        # value with spaces survives; nospace keeps bash from adding one
+        # after the closing quote
+        COMPREPLY=( "'${result//\'/\'\\\'\'}'" )
+        compopt -o nospace 2>/dev/null
+    else
+        # cancelled: leave the line as the user left it
+        COMPREPLY=()
+    fi
+}
+
+complete -F _gitq_complete gitq

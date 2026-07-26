@@ -55,6 +55,29 @@ Comma chains conditions (AND).  Values: ="quoted strings"=, =/regexes/=
 match — =where author alice= is what =where author contains alice= used to
 be).  Date operators: =after=, =before=, =within "N days/weeks/months/years"=.
 
+* Searching hunks
+
+=hunks= is a source in its own right — every hunk of every commit — because
+searching hunks is usually the subject and commits the filter:
+
+#+begin_example
+  $ gitq 'hunks grep "display-popup" [0..3]'
+  $ gitq 'hunks grep zle grep widget /count'      # successive greps intersect
+  $ gitq 'hunks grep "TODO" where revspec HEAD~20..HEAD'
+#+end_example
+
+=grep= searches the text of whatever is in front of it: a hunk carries
+=content=, so it filters and the shape survives.  A commit does not — its
+text is its tree — so =commits grep= searches that and yields lines.
+
+A hunk carries its commit's =author=, =date= and =message=; every other
+commit property is a dotted path away:
+
+#+begin_example
+  $ gitq 'hunks where commit.parents-count == 2'   # hunks from merges
+  $ gitq 'hunks grep "fix" where commit.email "a@b"'
+#+end_example
+
 * Revision ranges
 
 #+begin_example
@@ -202,9 +225,9 @@ minibuffer with the pipeline that produced it — tweak and re-run.
 * Terminals in daily use
 
 #+begin_example
-  commits where message "tokenize" first /copy         ; SHA to the clipboard
-  commits pickaxe "some-function" first /worktree      ; detached worktree at that commit
-  commits where author "alice" first /branch-off "from-alice"
+  commits where message "tokenize" [0] /copy         ; SHA to the clipboard
+  commits pickaxe "some-function" [0] /worktree      ; detached worktree at that commit
+  commits where author "alice" [0] /branch-off "from-alice"
   HEAD via parent* where message "fix" /count
 #+end_example
 

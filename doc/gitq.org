@@ -13,8 +13,8 @@ happen to the result.
 #+begin_example
   commits where author alice [0..5] /show
   HEAD via parent* where message "fix" /count
-  commits pickaxe "parse-morphism" first /worktree
-  HEAD via tree.entries.history sort -date first /copy
+  commits pickaxe "parse-morphism" [0] /worktree
+  HEAD via tree.entries.history sort -date [0] /copy
 #+end_example
 
 (Worked examples with real captured outputs live in [[file:examples.org][examples.org]].)
