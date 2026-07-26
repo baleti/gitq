@@ -38,19 +38,6 @@ pub fn complete_candidates(input: &str) -> Vec<String> {
         return strs(COMPLETE_SOURCE_KEYWORDS);
     }
 
-    // after "commits" → "in" or steps/terminals
-    if n == 1 && last_text == Some("commits") {
-        let mut out = vec!["in".to_string()];
-        out.extend(strs(STEP_KEYWORDS));
-        out.extend(complete_terminals());
-        return out;
-    }
-
-    // after "in" (source modifier or mid-pipeline step) → ranges, then refs
-    if last_text == Some("in") {
-        return complete_ranges();
-    }
-
     // after "via" → morphisms valid for the frame type flowing in
     if last_text == Some("via") {
         let fields = infer_fields(&ctx[..n - 1]);
@@ -295,10 +282,10 @@ mod tests {
     }
 
     #[test]
-    fn in_offers_ranges_before_bare_refs() {
+    fn refspec_offers_ranges_before_bare_refs() {
         // the bare ref is the degenerate revspec and reads as a no-op; the
-        // range is what the step is for, so it must be the visible default
-        let out = c("commits in ");
+        // range is what it is for, so it must be the visible default
+        let out = c("commits where refspec ");
         if out.is_empty() {
             return; // no refs in this checkout
         }
@@ -312,9 +299,9 @@ mod tests {
     }
 
     #[test]
-    fn after_a_source_comes_in_steps_and_terminals() {
+    fn after_a_source_comes_steps_and_terminals() {
         let out = c("commits ");
-        assert!(out.contains(&"in".to_string()));
+        assert!(!out.contains(&"in".to_string()), "`in` is gone");
         assert!(out.contains(&"where".to_string()));
         assert!(out.contains(&"/count".to_string()));
     }

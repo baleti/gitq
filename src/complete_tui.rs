@@ -1451,11 +1451,11 @@ mod tests {
         // the whole point: editing keys mean what they mean in a shell
         let mut st = CompleterState::new("commits ");
         st.handle(KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(st.active().line, "commits in ");
+        assert_eq!(st.active().line, "commits via ");
         st.handle(KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(st.active().line, "commits in");
+        assert_eq!(st.active().line, "commits via");
         st.handle(KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(st.active().line, "commits i");
+        assert_eq!(st.active().line, "commits vi");
     }
 
     #[test]
@@ -1676,7 +1676,7 @@ mod tests {
         let mut st = CompleterState::new("commits ");
         st.handle(KeyCode::Tab, KeyModifiers::NONE);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(st.accepted.as_deref(), Some("commits in"));
+        assert_eq!(st.accepted.as_deref(), Some("commits via"));
     }
 
     #[test]

@@ -4,13 +4,13 @@
 //!
 //! ```text
 //! pipeline ::= source step* terminal?
-//! source   ::= "commits" ["in" range-tokens] | "HEAD" | BRANCH
+//! source   ::= "commits" | "HEAD" | BRANCH
 //!            | "branches" | "tags" | "refs" | "worktrees" | "blobs"
 //! step     ::= "via" MORPHISM-PATH | "where" conditions | "grep" PATTERN
 //!            | "pickaxe" PATTERN ["regex"] | "path" GLOB
 //!            | "pick" FIELD[,...] | "[" SELECTORS "]"
 //!            | "first" | "last" | "sort" ["-"]FIELD
-//!            | "context" N [PATTERN] | "in" range-tokens
+//!            | "context" N [PATTERN]
 //! terminal ::= "/show" | "/copy" | ... (the closed terminal registry)
 //! ```
 //!
@@ -205,34 +205,7 @@ pub fn parse_source(toks: &[Token]) -> P<(Source, &[Token])> {
     let name = kw.text();
 
     Ok(match name {
-        "commits" | "commit" => {
-            // `commits in <range>` is the source-level range form; the range
-            // runs until the next stage boundary.
-            if rest.first().map(Token::text) == Some("in") {
-                let after = &rest[1..];
-                let end = after
-                    .iter()
-                    .position(|t| t.is_boundary())
-                    .unwrap_or(after.len());
-                // joined with spaces: the revspec is a list of arguments to
-                // git (`main ^v0.6.0` is two revisions), and concatenating
-                // them produced the single nonexistent revision
-                // `main^v0.6.0`
-                let range: String = after[..end]
-                    .iter()
-                    .map(Token::display)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if range.is_empty() {
-                    return perr(
-                        "gitq: 'in' requires a revision range, e.g. commits in main..HEAD",
-                    );
-                }
-                (Source::Commits(Some(range)), &after[end..])
-            } else {
-                (Source::Commits(None), rest)
-            }
-        }
+        "commits" | "commit" => (Source::Commits(None), rest),
         "branches" => (Source::Branches, rest),
         "tags" => (Source::Tags, rest),
         "worktrees" | "worktree" => (Source::Worktrees, rest),
@@ -370,33 +343,6 @@ pub fn parse_step<'a>(
             }
             let new_fields = picked.clone();
             Ok((vec![Step::Pick(picked)], remaining, new_fields))
-        }
-
-        "in" => {
-            // Mid-pipeline range restriction; needs a commit-identifying
-            // field (hunk/line/diff-line frames carry commit-sha, not sha).
-            if !f.iter().any(|x| x == "sha" || x == "commit-sha") {
-                return perr(format!(
-                    "gitq: 'in' needs a 'sha' or 'commit-sha' field, but the current frame only has: {}",
-                    list(&f)
-                ));
-            }
-            let end = toks
-                .iter()
-                .position(|t| t.is_boundary())
-                .unwrap_or(toks.len());
-            if end == 0 {
-                return perr("gitq: 'in' requires a revision range");
-            }
-            // Space-joined, split back into argv at exec: multi-token
-            // revspecs ("HEAD --not v1", "a b ^c") must reach rev-list as
-            // separate arguments.
-            let range = toks[..end]
-                .iter()
-                .map(Token::display)
-                .collect::<Vec<_>>()
-                .join(" ");
-            Ok((vec![Step::InRange(range)], &toks[end..], f))
         }
 
         "context" => {
@@ -1065,11 +1011,11 @@ mod tests {
     }
 
     #[test]
-    fn source_level_range() {
-        assert_eq!(
-            ok("commits in main..HEAD").source,
-            Source::Commits(Some("main..HEAD".into()))
-        );
+    fn the_source_level_range_form_is_gone() {
+        // `commits in main..HEAD` was the source modifier; ranges are now a
+        // where-condition, so the source carries none
+        assert_eq!(ok("commits").source, Source::Commits(None));
+        err("commits in main..HEAD", "expected step keyword");
     }
 
     // --- morphism chains typecheck --------------------------------------
@@ -1444,11 +1390,8 @@ mod tests {
         // HEAD^, HEAD^2, HEAD^! must reach git whole rather than being split
         // at the caret
         for r in ["HEAD^..HEAD", "HEAD^^..HEAD", "HEAD~2^..HEAD", "HEAD^!"] {
-            let p = ok(&format!("commits in {r}"));
-            match &p.source {
-                Source::Commits(Some(got)) => assert_eq!(got, r),
-                other => panic!("expected a ranged commits source, got {other:?}"),
-            }
+            let p = ok(&format!("commits where refspec {r}"));
+            assert_eq!(p.steps, vec![Step::InRange(r.into())]);
         }
     }
 
@@ -1456,19 +1399,16 @@ mod tests {
     fn a_multi_rev_range_keeps_its_spaces() {
         // `main ^v0.6.0` is two arguments to git; joining them without a
         // separator asked git for one revision named `main^v0.6.0`
-        let p = ok("commits in main ^v0.6.0");
-        match &p.source {
-            Source::Commits(Some(got)) => assert_eq!(got, "main ^v0.6.0"),
-            other => panic!("expected a ranged commits source, got {other:?}"),
-        }
+        let p = ok("commits where refspec main ^v0.6.0");
+        assert_eq!(p.steps, vec![Step::InRange("main ^v0.6.0".into())]);
     }
 
     #[test]
-    fn a_bare_in_with_no_range_is_an_error() {
-        // it used to fall through to an empty range, which ran as plain
-        // `git log` and answered "all commits" to a query that named none
-        err("commits in", "requires a revision range");
-        err("commits in /count", "requires a revision range");
+    fn in_is_gone_and_says_so() {
+        // superseded by `where refspec`; the parser names the token it did
+        // not recognise rather than silently treating it as a value
+        err("commits in main..HEAD", "expected step keyword");
+        err("commits in", "expected step keyword");
     }
 
     #[test]
@@ -1565,12 +1505,12 @@ mod tests {
     }
 
     #[test]
-    fn mid_pipeline_in_needs_a_commit_identifying_field() {
-        assert!(p("commits in v1..HEAD").is_ok());
+    fn refspec_needs_a_commit_identifying_field() {
+        assert!(p("commits where refspec v1..HEAD").is_ok());
         // every source shape carries `sha` or `commit-sha`, so the only way
         // to lose it is to project it away
         err(
-            "commits pick author in v1..HEAD",
+            "commits pick author where refspec v1..HEAD",
             "needs a 'sha' or 'commit-sha' field",
         );
     }
@@ -1579,11 +1519,12 @@ mod tests {
     fn revspec_vocabulary_survives_into_the_range() {
         // the tokenizer classifies --not and ^rev; the range must be
         // reassembled with them intact, since git parses the string
-        let Step::InRange(r) = &ok("commits via parent in HEAD --not v1").steps[1] else {
+        let Step::InRange(r) = &ok("commits via parent where refspec HEAD --not v1").steps[1]
+        else {
             panic!("expected InRange")
         };
         assert_eq!(r, "HEAD --not v1");
-        let Step::InRange(r) = &ok("commits via parent in HEAD ^v1").steps[1] else {
+        let Step::InRange(r) = &ok("commits via parent where refspec HEAD ^v1").steps[1] else {
             panic!("expected InRange")
         };
         assert_eq!(r, "HEAD ^v1");
