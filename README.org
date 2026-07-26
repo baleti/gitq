@@ -204,6 +204,12 @@ once, as a positional step on that buffer's own query — the same
 for hunks and diff lines, whose identity is compound and cannot be pinned
 by field equality.
 
+Each accepted query gets its own buffer, named after it — =*gitq: hunks
+grep widget*= — so results from different queries sit side by side instead
+of overwriting one another; re-running a query reuses its buffer.  The live
+preview stays in one shared =*gitq*= buffer, since it re-renders on every
+keystroke.
+
 Movement is by *entry*: =n=/=p=, =j=/=k=, =C-n=/=C-p= and the arrow keys
 step between results rather than screen lines, so a hunk is one stop
 however many rows its body takes.  The results buffer is headed by the same
