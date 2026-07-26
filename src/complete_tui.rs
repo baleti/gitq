@@ -44,12 +44,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Terminal;
 
+use crate::ast::Step;
 use crate::complete::{annotate, complete_candidates};
 use crate::exec::exec_pipeline;
 use crate::frame::Frame;
 use crate::git::{toplevel, GitqError};
 use crate::parse::parse_pipeline;
-use crate::render::{render_frame_line, render_frames_text};
+use crate::render::render_frame_line;
 
 // --- candidates ----------------------------------------------------------
 
@@ -134,6 +135,66 @@ fn fuzzy_score(query: &str, cand: &str) -> Option<i32> {
 }
 
 // --- preview -------------------------------------------------------------
+
+/// The pattern a pipeline greps for, compiled so the preview can highlight
+/// it.  A plain pattern is escaped so it matches literally, exactly as the
+/// executor's substring test does; a `/slashed/` one is already a regex.
+fn grep_highlight(pipeline: &str) -> Option<regex::Regex> {
+    let parsed = parse_pipeline(pipeline.trim()).ok()?;
+    parsed.steps.iter().find_map(|st| match st {
+        Step::GrepContent(p, is_re) | Step::Grep(p, is_re) => {
+            let src = if *is_re { p.clone() } else { regex::escape(p) };
+            regex::Regex::new(&src).ok()
+        }
+        _ => None,
+    })
+}
+
+/// A diff row's colour, by the prefix git gave it.  Row 0 of a frame is
+/// gitq's own header line, not diff output, so it is styled as a header.
+fn diff_style(row: usize, text: &str) -> Style {
+    if row == 0 {
+        return Style::default().add_modifier(Modifier::BOLD);
+    }
+    match text.as_bytes().first() {
+        Some(b'+') => Style::default().fg(Color::Green),
+        Some(b'-') => Style::default().fg(Color::Red),
+        Some(b'@') => Style::default().fg(Color::Cyan),
+        Some(b'\\') => Style::default().fg(Color::DarkGray),
+        _ => Style::default(),
+    }
+}
+
+/// Split TEXT into spans, giving matches of HL a reversed run so they stand
+/// out against whatever colour the diff line already carries.
+fn styled_row(text: &str, base: Style, hl: Option<&regex::Regex>) -> Vec<Span<'static>> {
+    let Some(re) = hl else {
+        return vec![Span::styled(text.to_string(), base)];
+    };
+    let mut out = Vec::new();
+    let mut last = 0;
+    for m in re.find_iter(text) {
+        // a zero-width match would loop without advancing
+        if m.end() == m.start() {
+            continue;
+        }
+        if m.start() > last {
+            out.push(Span::styled(text[last..m.start()].to_string(), base));
+        }
+        out.push(Span::styled(
+            text[m.start()..m.end()].to_string(),
+            base.add_modifier(Modifier::REVERSED),
+        ));
+        last = m.end();
+    }
+    if last < text.len() {
+        out.push(Span::styled(text[last..].to_string(), base));
+    }
+    if out.is_empty() {
+        out.push(Span::styled(text.to_string(), base));
+    }
+    out
+}
 
 /// Frames for a pipeline via gitq's own `--preview` (parse, run source and
 /// steps, never apply a terminal).  `Err` carries the parse/exec message or
@@ -472,6 +533,9 @@ struct CompleterState {
     frames_from: String,
     /// Selection within the preview when `Focus::Preview`.
     preview_sel: usize,
+    /// Compiled from the pipeline's own `grep`, so the preview highlights
+    /// what the query searched for rather than a second, separate search box.
+    highlight: Option<regex::Regex>,
     /// A `^w` was pressed and the next key is a window command.
     pending_window: bool,
     /// Filter text and selection for the `M-x` palette.
@@ -499,6 +563,7 @@ impl CompleterState {
             frames_key: String::new(),
             frames_from: String::new(),
             preview_sel: 0,
+            highlight: None,
             pending_window: false,
             palette_query: String::new(),
             palette_sel: 0,
@@ -562,6 +627,7 @@ impl CompleterState {
                 }
             }
         }
+        self.highlight = grep_highlight(&self.frames_from);
         self.frames_key = key;
         self.preview_sel = 0;
         // row numbers refer to the old result set; keeping them would act on
@@ -1138,11 +1204,9 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                     .map(|(n, raw)| {
                         // the gutter marks the frame, so only its first row
                         let g = if n == 0 { glyph } else { " " };
-                        let line = Line::from(vec![
-                            Span::styled(g, style),
-                            Span::raw(" "),
-                            Span::raw(raw.to_string()),
-                        ]);
+                        let mut spans = vec![Span::styled(g, style), Span::raw(" ")];
+                        spans.extend(styled_row(raw, diff_style(n, raw), st.highlight.as_ref()));
+                        let line = Line::from(spans);
                         if in_visual {
                             line.style(Style::default().bg(Color::Rgb(40, 50, 60)))
                         } else {
@@ -1168,8 +1232,23 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
             &mut ls,
         );
     } else if !st.frames.is_empty() {
+        // the same styling unfocused, so stepping into the preview does not
+        // change what the results look like
+        let lines: Vec<Line> = st
+            .frames
+            .iter()
+            .flat_map(|fr| {
+                render_frame_line(fr)
+                    .lines()
+                    .enumerate()
+                    .map(|(n, raw)| {
+                        Line::from(styled_row(raw, diff_style(n, raw), st.highlight.as_ref()))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         f.render_widget(
-            Paragraph::new(render_frames_text(&st.frames))
+            Paragraph::new(lines)
                 .block(pv_block)
                 .wrap(Wrap { trim: false }),
             pv,
@@ -1728,6 +1807,59 @@ mod tests {
         st.handle(KeyCode::Char('w'), KeyModifiers::CONTROL);
         st.handle(KeyCode::Char('l'), KeyModifiers::NONE);
         assert_eq!(st.focus, Focus::Columns);
+    }
+
+    // --- preview styling ---------------------------------------------------
+
+    #[test]
+    fn diff_rows_are_coloured_by_their_prefix() {
+        use ratatui::style::Color;
+        assert_eq!(diff_style(1, "+added").fg, Some(Color::Green));
+        assert_eq!(diff_style(1, "-removed").fg, Some(Color::Red));
+        assert_eq!(diff_style(1, "@@ -1 +1 @@").fg, Some(Color::Cyan));
+        assert_eq!(diff_style(1, " context").fg, None);
+        // row 0 is gitq's own header, not diff output
+        assert!(diff_style(0, "abc123  file.rs:1-9")
+            .add_modifier
+            .contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn the_grep_pattern_is_taken_from_the_pipeline_itself() {
+        // the preview highlights what the query searched for; there is no
+        // second search box to get out of step with it
+        let re = grep_highlight(r#"hunks grep "popup""#).expect("no pattern");
+        assert!(re.is_match("a display-popup here"));
+        assert!(!re.is_match("nothing"));
+        // a plain pattern is literal, so regex punctuation cannot misfire
+        let re = grep_highlight(r#"hunks grep "a.c""#).expect("no pattern");
+        assert!(re.is_match("a.c"));
+        assert!(!re.is_match("abc"), "plain pattern matched as a regex");
+        // a slashed one is a regex
+        let re = grep_highlight("hunks grep /a.c/").expect("no pattern");
+        assert!(re.is_match("abc"));
+        // and a pipeline with no grep highlights nothing
+        assert!(grep_highlight("hunks").is_none());
+    }
+
+    #[test]
+    fn matches_are_split_into_their_own_spans() {
+        let re = regex::Regex::new("pop").unwrap();
+        let spans = styled_row("a pop b pop", Style::default(), Some(&re));
+        let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, vec!["a ", "pop", " b ", "pop"]);
+        // the whole row survives even with no match
+        let spans = styled_row("nothing", Style::default(), Some(&re));
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), "nothing");
+    }
+
+    #[test]
+    fn a_zero_width_match_does_not_hang() {
+        let re = regex::Regex::new("x*").unwrap();
+        let spans = styled_row("abc", Style::default(), Some(&re));
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "abc");
     }
 
     // --- visual selection in the preview ----------------------------------
