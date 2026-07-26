@@ -279,5 +279,25 @@ does not parse, so no results buffer opened at all."
   "Trailing whitespace must not fork a second buffer for one query."
   (should (equal (gitq--buffer-name "commits ") (gitq--buffer-name "commits"))))
 
+(ert-deftest gitq-test-fresh-buffer-per-accepted-query ()
+  "Accepting a query at the prompt must not land on an existing buffer.
+`gitq--buffer-name' trims, so `commits \=' and `commits\=' share a name; without
+uniquifying, Enter on the second silently reused the first and looked
+like it had done nothing."
+  (let (made)
+    (unwind-protect
+        (let ((gitq--fresh-buffer t))
+          (push (gitq--result-buffer "commits") made)
+          (push (gitq--result-buffer "commits ") made)
+          (should-not (eq (car made) (cadr made)))
+          ;; and an in-place refresh still reuses
+          (let ((gitq--fresh-buffer nil))
+            (should (eq (gitq--result-buffer "commits") (cadr made))))
+          ;; the preview buffer is shared however it is reached
+          (should (eq (gitq--result-buffer "commits" t)
+                      (gitq--result-buffer "anything else" t))))
+      (mapc #'kill-buffer (delq nil made))
+      (when (get-buffer "*gitq*") (kill-buffer "*gitq*")))))
+
 (provide 'gitq-tests)
 ;;; gitq-tests.el ends here
