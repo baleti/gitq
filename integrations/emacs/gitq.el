@@ -947,9 +947,24 @@ run from the current repo (each entry is annotated with its repo)."
     ;; submit the outer gitq prompt: run the query for real
     (exit-minibuffer)))
 
+(defun gitq-submit-pipeline ()
+  "Exit the minibuffer with the pipeline exactly as typed.
+Deliberately ignores whichever completion candidate happens to be
+highlighted.  Under vertico the first candidate is preselected, so plain
+RET returns *that* rather than the input: typing `commits \=' and hitting
+RET submitted `commits via\=', which does not parse, so no results buffer
+appeared and the previous one stayed on screen.
+
+TAB is how a candidate is accepted; RET means \='run what I wrote\='.  The
+completer TUI draws the same line."
+  (interactive)
+  (if (fboundp 'vertico-exit-input) (vertico-exit-input) (exit-minibuffer)))
+
 (defvar gitq--pipeline-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-r") #'gitq--history-search)
+    (define-key map (kbd "RET") #'gitq-submit-pipeline)
+    (define-key map [return] #'gitq-submit-pipeline)
     map)
   "Keymap merged into the minibuffer's local map by `gitq--read-pipeline'.
 Window switching into the results buffer is deliberately not bound

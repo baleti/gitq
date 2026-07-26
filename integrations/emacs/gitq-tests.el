@@ -267,5 +267,17 @@ lacks a field it pins on."
       (should (string-prefix-p "hi-" (symbol-name (plist-get plist :inherit))))
       (should (plist-get plist :foreground)))))
 
+(ert-deftest gitq-test-ret-submits-typed-input ()
+  "RET must submit the typed pipeline, not the highlighted candidate.
+Under vertico the first candidate is preselected, so an unbound RET
+returns it instead of the input — `commits \=' became `commits via\=', which
+does not parse, so no results buffer opened at all."
+  (should (eq (lookup-key gitq--pipeline-map (kbd "RET")) #'gitq-submit-pipeline))
+  (should (eq (lookup-key gitq--pipeline-map [return]) #'gitq-submit-pipeline)))
+
+(ert-deftest gitq-test-trailing-space-is-the-same-query ()
+  "Trailing whitespace must not fork a second buffer for one query."
+  (should (equal (gitq--buffer-name "commits ") (gitq--buffer-name "commits"))))
+
 (provide 'gitq-tests)
 ;;; gitq-tests.el ends here
