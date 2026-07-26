@@ -709,8 +709,14 @@ impl CompleterState {
                 KeyCode::Char('c' | 'g') if ctrl => self.quit = true,
                 KeyCode::Enter => self.accept(),
                 KeyCode::Tab => self.commit(),
+                // Shift-Tab, not Ctrl-Tab: Ctrl-Tab is indistinguishable
+                // from Tab here (measured — it arrives as KeyCode::Tab with
+                // no modifier, even with the kitty disambiguation flag
+                // pushed, since tmux's extended-keys is off).  ^L stays as an
+                // alias for anyone with it in their fingers.
+                KeyCode::BackTab => self.enter_preview(),
                 KeyCode::Char('l') if ctrl => self.enter_preview(),
-                KeyCode::BackTab | KeyCode::Up => self.active_mut().move_sel(-1),
+                KeyCode::Up => self.active_mut().move_sel(-1),
                 KeyCode::Down => self.active_mut().move_sel(1),
                 KeyCode::Char('p' | 'k') if ctrl => self.active_mut().move_sel(-1),
                 KeyCode::Char('n' | 'j') if ctrl => self.active_mut().move_sel(1),
@@ -747,6 +753,7 @@ impl CompleterState {
                     }
                 }
                 KeyCode::Enter | KeyCode::Tab => self.pivot(),
+                KeyCode::BackTab => self.focus = Focus::Columns,
                 KeyCode::Char('l') if ctrl => self.pivot(),
                 // Nothing is typed here, so movement takes the vi and the
                 // readline pair with or without Ctrl — one arm each, rather
@@ -1007,7 +1014,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                     n,
                     desc
                 ),
-                "Tab next  ^j/^k move  ^L preview  M-x cmds  ↵ accept",
+                "Tab next  ^j/^k move  S-Tab preview  M-x cmds  ↵ accept",
             )
         }
         Focus::Preview => {
@@ -1025,7 +1032,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                 if st.visual_from.is_some() {
                     "^j/^k extend  m mark range  v cancel  ↵ act on selection"
                 } else {
-                    "^j/^k move  v visual  m mark  ↵ pivot  Esc back"
+                    "^j/^k move  v visual  m mark  ↵ pivot  S-Tab back"
                 },
             )
         }
@@ -1256,6 +1263,41 @@ mod tests {
         st.handle(KeyCode::Char('k'), KeyModifiers::CONTROL);
         assert_eq!(st.palette_sel, 0);
         assert_eq!(st.palette_query, "", "^j/^k leaked into the filter");
+    }
+
+    #[test]
+    fn shift_tab_toggles_focus_between_the_column_and_the_preview() {
+        // Ctrl-Tab cannot be used: it arrives as plain Tab with no modifier
+        // (measured through crossterm under tmux), so it would shadow the
+        // commit key rather than switch focus
+        let mut st = CompleterState::new("commits ");
+        st.frames = vec![commit_frame("aaaa")];
+        st.handle(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(st.focus, Focus::Preview);
+        st.handle(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(st.focus, Focus::Columns);
+    }
+
+    #[test]
+    fn shift_tab_no_longer_moves_the_selection() {
+        // it used to duplicate Up; Up and ^k/^p still do that job
+        let mut st = CompleterState::new("commits ");
+        st.frames = vec![commit_frame("aaaa")];
+        st.active_mut().move_sel(2);
+        let before = st.active().selected;
+        st.handle(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(st.active().selected, before);
+        st.handle(KeyCode::BackTab, KeyModifiers::SHIFT); // back to columns
+        st.handle(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(st.active().selected, before - 1, "Up stopped moving");
+    }
+
+    #[test]
+    fn shift_tab_into_an_empty_preview_is_a_no_op() {
+        let mut st = CompleterState::new("commits ");
+        st.frames.clear();
+        st.handle(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(st.focus, Focus::Columns);
     }
 
     #[test]
