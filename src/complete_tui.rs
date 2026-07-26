@@ -953,7 +953,9 @@ impl CompleterState {
             Focus::Preview => match code {
                 KeyCode::Char('h') if ctrl => self.focus = Focus::Columns,
                 KeyCode::Char('v') => self.toggle_visual(),
-                KeyCode::Char('m') => self.mark_selection(),
+                // space, not `m`: nothing else in this pane wants it, and
+                // "tick this one" is what a spacebar means in every list UI
+                KeyCode::Char(' ') => self.mark_selection(),
                 // Esc peels one layer at a time: the range, then the marks,
                 // then the preview itself — so it never discards more than
                 // the user was looking at.
@@ -1278,9 +1280,9 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
             (
                 format!("preview {}/{}{sel}", st.preview_sel + 1, st.frames.len()),
                 if st.visual_from.is_some() {
-                    "^j/^k extend  m mark range  v cancel  ↵ act on selection"
+                    "^j/^k extend  space mark range  v cancel  ↵ act on selection"
                 } else {
-                    "^j/^k move  v visual  m mark  ↵ pivot  ^H back"
+                    "^j/^k move  v visual  space mark  ↵ pivot  ^H back"
                 },
             )
         }
@@ -1814,11 +1816,11 @@ mod tests {
     }
 
     #[test]
-    fn m_banks_the_range_and_leaves_visual_so_another_can_be_made() {
+    fn space_banks_the_range_and_leaves_visual_so_another_can_be_made() {
         let mut st = previewing(10);
         st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
         down(&mut st, 1);
-        st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+        st.handle(KeyCode::Char(' '), KeyModifiers::NONE);
         assert!(st.visual_from.is_none(), "still in visual mode after m");
         assert_eq!(st.marked.len(), 2);
 
@@ -1826,7 +1828,7 @@ mod tests {
         down(&mut st, 4);
         st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
         down(&mut st, 1);
-        st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+        st.handle(KeyCode::Char(' '), KeyModifiers::NONE);
         assert_eq!(st.selection_step().as_deref(), Some("[0..2,5..7]"));
     }
 
@@ -1835,17 +1837,24 @@ mod tests {
         let mut st = previewing(10);
         for r in [0usize, 1, 2, 5, 8] {
             st.preview_sel = r;
-            st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+            st.handle(KeyCode::Char(' '), KeyModifiers::NONE);
         }
         assert_eq!(st.selection_step().as_deref(), Some("[0..3,5,8]"));
     }
 
     #[test]
-    fn m_on_an_already_marked_row_unmarks_it() {
+    fn m_no_longer_marks() {
         let mut st = previewing(4);
         st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+        assert!(st.marked.is_empty(), "m still marks");
+    }
+
+    #[test]
+    fn space_on_an_already_marked_row_unmarks_it() {
+        let mut st = previewing(4);
+        st.handle(KeyCode::Char(' '), KeyModifiers::NONE);
         assert_eq!(st.marked.len(), 1);
-        st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+        st.handle(KeyCode::Char(' '), KeyModifiers::NONE);
         assert!(st.marked.is_empty());
     }
 
@@ -1862,7 +1871,7 @@ mod tests {
     #[test]
     fn escape_peels_the_range_then_the_marks_then_the_preview() {
         let mut st = previewing(6);
-        st.handle(KeyCode::Char('m'), KeyModifiers::NONE); // a mark
+        st.handle(KeyCode::Char(' '), KeyModifiers::NONE); // a mark
         down(&mut st, 2);
         st.handle(KeyCode::Char('v'), KeyModifiers::NONE); // and a range
         st.handle(KeyCode::Esc, KeyModifiers::NONE);
@@ -1915,7 +1924,7 @@ mod tests {
         let mut st = previewing(10);
         for r in [1usize, 2, 6] {
             st.preview_sel = r;
-            st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+            st.handle(KeyCode::Char(' '), KeyModifiers::NONE);
         }
         let step = st.selection_step().unwrap();
         assert_eq!(step, "[1..3,6]");
@@ -1934,7 +1943,7 @@ mod tests {
         // row numbers refer to the old frames; acting on them afterwards
         // would hit whatever now sits at those positions
         let mut st = previewing(5);
-        st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+        st.handle(KeyCode::Char(' '), KeyModifiers::NONE);
         assert!(!st.marked.is_empty());
         st.focus = Focus::Columns;
         st.frames_key = "stale".into();
