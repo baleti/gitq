@@ -8,8 +8,8 @@ happen to the result.
 #+begin_example
   gitq 'commits where author alice [0..5] /show'
   gitq 'HEAD via parent* where message "fix" /count'
-  gitq 'commits pickaxe "some-function" first /worktree'
-  gitq 'HEAD via tree.entries.history sort -date first /copy'
+  gitq 'commits pickaxe "some-function" [0] /worktree'
+  gitq 'HEAD via tree.entries.history sort -date [0] /copy'
 #+end_example
 
 A pipeline is =source [step...] [/terminal]=: a source produces typed frames
@@ -356,31 +356,39 @@ on what is valid where.  This needs =compinit=; if you never run it, menu
 completion is simply absent and the =TAB= TUI still works.
 
 
-* Bash completion
+* Bash integration
 
-Same delegation model as zsh — no grammar is duplicated.  bash calls
-=gitq --complete=; zsh calls =gitq --complete-annotated=, which adds the
-registry's own kind and description for each candidate so the menu can
-group them without keeping its own copy of the grammar:
+One file, one line in =~/.bashrc=, and =TAB= behaves as it does under zsh:
 
 #+begin_src sh
   cd ~/gitq && make install-bash
 #+end_src
 
-That copies =integrations/bash/gitq.bash= into
-=~/.local/share/bash-completion/completions/gitq=.  Most distributions'
-=bash-completion= package auto-sources that directory; if yours does not,
-the installer prints the one line to add to =~/.bashrc=:
+then add
 
 #+begin_src sh
-  source ~/.local/share/bash-completion/completions/gitq
+  source ~/.local/share/gitq/gitq.bash
 #+end_src
 
-Override the destination with =make install-bash BASH_COMP_DIR=...=.
-Completion works both with the pipeline quoted (=gitq 'commits wh<TAB>= →
-=gitq 'commits where'=) and unquoted (=gitq commits wh<TAB>=); bash lists
-plain candidates rather than the categorized menu zsh's =compsys= draws,
-which is a display nicety, not required behavior.
+=TAB= on a =gitq= command line opens the same columnar completer TUI, in a
+tmux popup where tmux is available.  *Every other command's TAB is
+untouched.*
+
+That is why it is a completion function (=complete -F=) rather than a key
+binding.  bash has no equivalent of zsh's =zle ${GITQ_FALLBACK_TAB}= —
+nothing meaning "otherwise do whatever TAB normally does" — so binding TAB
+with =bind -x= would replace completion globally and break every other
+command.  =complete -F= is per-command, so gitq takes over its own TAB and
+nothing else's.
+
+The TUI needs nothing from the shell: it draws on =/dev/tty= and prints the
+chosen pipeline to stdout, which the completion function offers as the
+single completion for bash to substitute in.  =GITQ_NO_TAB=1= falls back to
+plain candidate completion.
+
+What bash does *not* get is the =M-b= / =M-e= scrollback widgets, which
+need a line editor gitq can drive.  =gitq --scrollback-browse= run directly
+does the same job.
 
 * Differences from the Emacs Lisp original
 

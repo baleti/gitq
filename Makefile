@@ -107,14 +107,17 @@ install-zsh:
 # completions dir.  Far simpler than zsh — bash has no fpath-style
 # autodiscovery, so if the bash-completion package doesn't auto-source
 # that directory we print the one `source` line to add to ~/.bashrc.
-BASH_COMP_DIR ?= $(XDG_DATA_HOME)/bash-completion/completions
-
+# Per-user bash integration.  Installed next to the zsh one, in gitq's own
+# data dir rather than the bash-completion directory: it is sourced, and it
+# does more than complete (TAB opens the TUI).
 install-bash:
-	@mkdir -p $(BASH_COMP_DIR)
-	@install -m 644 $(CURDIR)/integrations/bash/gitq.bash $(BASH_COMP_DIR)/gitq
-	@echo "Copied gitq bash completion into $(BASH_COMP_DIR)."
-	@echo "If your bash-completion package doesn't auto-source that dir, add"
-	@echo "to ~/.bashrc:  source $(BASH_COMP_DIR)/gitq"
+	@mkdir -p $(ZSH_DIR)
+	@install -m 644 $(CURDIR)/integrations/bash/gitq.bash $(ZSH_DIR)/gitq.bash
+	@echo "Copied gitq.bash into $(ZSH_DIR)."
+	@echo "Add this one line to ~/.bashrc:"
+	@echo "  source $(ZSH_DIR)/gitq.bash"
+	@echo "TAB on a gitq command line then opens the completer TUI; every"
+	@echo "other command's TAB is untouched."
 
 clean:
 	$(CARGO) clean
