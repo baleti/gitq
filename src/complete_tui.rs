@@ -162,7 +162,7 @@ fn grep_highlights(pipeline: &str) -> Vec<regex::Regex> {
 /// glance.  Black on a solid background: the row's own diff colour would
 /// otherwise be doing double duty and neither would read.
 fn highlight_style(n: usize) -> Style {
-    const BG: [Color; 4] = [Color::Yellow, Color::Cyan, Color::Magenta, Color::Green];
+    const BG: [Color; 4] = [Color::White, Color::Cyan, Color::Magenta, Color::Green];
     Style::default().fg(Color::Black).bg(BG[n % BG.len()])
 }
 
@@ -675,6 +675,10 @@ struct CompleterState {
     /// Filter text and selection for the `M-x` palette.
     palette_query: String,
     palette_sel: usize,
+    /// First preview row on screen.  The focused preview scrolls by *line*,
+    /// not by item, so a frame taller than the space left is clipped like
+    /// any other text rather than vanishing.
+    preview_scroll: u16,
     /// Anchor of the visual-mode range; `Some` while `v` is active.  The
     /// live range is anchor..=preview_sel, in either direction.
     visual_from: Option<usize>,
@@ -701,6 +705,7 @@ impl CompleterState {
             pending_window: false,
             palette_query: String::new(),
             palette_sel: 0,
+            preview_scroll: 0,
             visual_from: None,
             marked: BTreeSet::new(),
             accepted: None,
@@ -1197,7 +1202,7 @@ fn event_loop(
         if st.focus == Focus::Columns {
             st.refresh_preview();
         }
-        term.draw(|f| draw(f, &st))?;
+        term.draw(|f| draw(f, &mut st))?;
         if let Event::Key(k) = event::read()? {
             if k.kind != KeyEventKind::Press {
                 continue;
@@ -1214,7 +1219,7 @@ fn event_loop(
 
 // --- drawing -------------------------------------------------------------
 
-fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
+fn draw(f: &mut ratatui::Frame, st: &mut CompleterState) {
     let dim = Style::default().fg(Color::DarkGray);
     let sel = Style::default().add_modifier(Modifier::REVERSED);
     let sel_dim = Style::default()
@@ -1325,7 +1330,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
     };
     if st.focus == Focus::Preview {
         let vis = st.visual_range();
-        let items: Vec<ListItem> = st
+        let items: Vec<Vec<Line>> = st
             .frames
             .iter()
             .enumerate()
@@ -1367,16 +1372,44 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                 if rows.is_empty() {
                     rows.push(Line::from(" "));
                 }
-                ListItem::new(rows)
+                rows
             })
             .collect();
-        let mut ls = ListState::default();
-        ls.select(Some(st.preview_sel));
-        f.render_stateful_widget(
-            List::new(items).highlight_style(sel).highlight_symbol("▌"),
-            pv,
-            &mut ls,
-        );
+        // A Paragraph, not a List: ratatui's List drops any item that does
+        // not fit entirely, so the last hunk simply vanished until it was
+        // selected.  The unfocused preview is a Paragraph and clips mid-frame
+        // like ordinary text; scrolling by line here makes the two agree.
+        let mut lines: Vec<Line> = Vec::new();
+        let mut sel_span = (0usize, 0usize);
+        for (i, item) in items.into_iter().enumerate() {
+            let start = lines.len();
+            let selected = i == st.preview_sel;
+            lines.extend(item.into_iter().map(|l| {
+                // the List used to draw the selection; with a Paragraph the
+                // rows carry it themselves
+                if selected {
+                    l.style(sel)
+                } else {
+                    l
+                }
+            }));
+            if selected {
+                sel_span = (start, lines.len());
+            }
+        }
+        // keep the selected frame on screen, the way the scrollback browser
+        // does: clamp rather than centre, so movement does not jump
+        let h = pv.height as usize;
+        let (top, bottom) = sel_span;
+        let mut scroll = st.preview_scroll as usize;
+        if top < scroll {
+            scroll = top;
+        } else if bottom > scroll + h {
+            scroll = bottom.saturating_sub(h);
+        }
+        scroll = scroll.min(lines.len().saturating_sub(1));
+        st.preview_scroll = scroll as u16;
+        f.render_widget(Paragraph::new(lines).scroll((st.preview_scroll, 0)), pv);
     } else if !st.frames.is_empty() {
         // the same styling unfocused, so stepping into the preview does not
         // change what the results look like
@@ -2049,6 +2082,15 @@ mod tests {
         let hl: Vec<&Span> = spans.iter().filter(|s| s.style.bg.is_some()).collect();
         assert_eq!(hl.len(), 2);
         assert_ne!(hl[0].style.bg, hl[1].style.bg, "both patterns same colour");
+    }
+
+    #[test]
+    fn the_first_pattern_is_white_and_the_rest_differ_from_it() {
+        use ratatui::style::Color;
+        assert_eq!(highlight_style(0).bg, Some(Color::White));
+        for n in 1..4 {
+            assert_ne!(highlight_style(n).bg, highlight_style(0).bg);
+        }
     }
 
     #[test]
