@@ -275,9 +275,9 @@ the pipeline the highlighted candidate would produce on the right:
   cursor.  =↵= then acts on the whole selection, which becomes a
   positional step on the query you are in (=commits [0..3,5..7]=) rather
   than hidden state.
-- =^w l= steps into the preview and =^w h= back, as in vim's window
-  commands (=^w w= goes to the other pane): the result frames become a
-  selectable list,
+- =^L= steps into the preview and =^H= back (=^w l= / =^w h= / =^w w= also
+  work, as in vim's window commands): the result frames become a selectable
+  list,
   and =↵= *pivots* onto the highlighted one — a fresh column
   re-roots on that object (a commit by its SHA, a hunk re-derived through
   =diff.hunks=, …), so you drill from a query's results into a new query
