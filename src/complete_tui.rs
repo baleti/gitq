@@ -1122,10 +1122,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
     let natural = |col: &Column| -> u16 {
         col.filtered
             .iter()
-            .map(|&j| {
-                let c = &col.all[j];
-                c.text.chars().count() + c.kind.chars().count() + 3
-            })
+            .map(|&j| col.all[j].text.chars().count() + 3)
             .max()
             .unwrap_or(12)
             .min(avail.saturating_sub(preview_min).max(12) as usize) as u16
@@ -1143,14 +1140,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
     let items: Vec<ListItem> = col
         .filtered
         .iter()
-        .map(|&j| {
-            let c = &col.all[j];
-            ListItem::new(Line::from(vec![
-                Span::raw(c.text.clone()),
-                Span::raw(" "),
-                Span::styled(c.kind.to_string(), dim),
-            ]))
-        })
+        .map(|&j| ListItem::new(Line::from(Span::raw(col.all[j].text.clone()))))
         .collect();
     let mut ls = ListState::default();
     if !col.filtered.is_empty() {
