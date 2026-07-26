@@ -556,6 +556,30 @@ be hundreds of them."
     (put-text-property start (point) 'gitq-sha (gitq--frame-commit-sha frame))
     (insert "\n")))
 
+(defvar gitq--fresh-buffer nil
+  "When non-nil, `gitq--render' starts a new results buffer rather than reusing.
+Bound by the `gitq' command, so every accepted query gets its own buffer,
+and left nil by the live preview and by in-place refreshes.")
+
+(defun gitq--result-buffer (pipeline-str &optional preview)
+  "The buffer `gitq--render' should draw PIPELINE-STR into.
+
+Normally the one named after the query, reused if it exists — that is
+what makes a refresh update in place.  Under `gitq--fresh-buffer' an
+occupied name is uniquified instead, so accepting a query at the prompt
+always yields a new buffer.
+
+Without that, two queries that differ only in whitespace collided:
+`gitq--buffer-name' trims, so `hunks grep dgcl \=' landed on the buffer
+`hunks grep dgcl\=' had already made and Enter looked like it had done
+nothing at all.  Trimming is still right for the *name* — an invisible
+trailing space should not show up as a different title — so the fix is
+here, in whether the name is reused, not in the name itself."
+  (let ((name (gitq--buffer-name pipeline-str preview)))
+    (if (and gitq--fresh-buffer (not preview) (get-buffer name))
+        (generate-new-buffer name)
+      (get-buffer-create name))))
+
 (defun gitq--render (frames pipeline-str &optional truncated preview)
   "Render FRAMES into a results buffer and return it.
 
@@ -568,7 +592,7 @@ Hunk and diff-line frames are grouped under commit metadata headers
 of the query's search terms are highlighted with `gitq-match-face'.
 TRUNCATED, if non-nil, is how many further results were omitted (used
 by the live preview)."
-  (with-current-buffer (get-buffer-create (gitq--buffer-name pipeline-str preview))
+  (with-current-buffer (gitq--result-buffer pipeline-str preview)
     (let ((inhibit-read-only t)
           (gitq--active-highlights (gitq--highlight-regexps pipeline-str))
           (last-group-sha nil))
@@ -1372,7 +1396,8 @@ buffer, the minibuffer is pre-filled with the pipeline that produced it."
               (when (fboundp 'magit-refresh) (magit-refresh))
               (message "%s" (string-trim out)))
           (user-error "%s" (string-trim out))))
-    (gitq--display (gitq--frames pipeline) pipeline)))
+    (let ((gitq--fresh-buffer t))
+      (gitq--display (gitq--frames pipeline) pipeline))))
 
 (provide 'gitq)
 ;;; gitq.el ends here
