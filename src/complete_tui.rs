@@ -392,7 +392,7 @@ pub enum Outcome {
     Cancelled,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Columns,
     Preview,
@@ -417,6 +417,8 @@ struct CompleterState {
     frames_from: String,
     /// Selection within the preview when `Focus::Preview`.
     preview_sel: usize,
+    /// A `^w` was pressed and the next key is a window command.
+    pending_window: bool,
     /// Filter text and selection for the `M-x` palette.
     palette_query: String,
     palette_sel: usize,
@@ -443,6 +445,7 @@ impl CompleterState {
             frames_key: String::new(),
             frames_from: String::new(),
             preview_sel: 0,
+            pending_window: false,
             palette_query: String::new(),
             palette_sel: 0,
             visual_from: None,
@@ -698,9 +701,41 @@ impl CompleterState {
         self.palette_sel = 0;
     }
 
+    /// The key after a `^w`: vim's window commands over the two panes this UI
+    /// has.  `w` goes to the *other* one, which with two panes is both
+    /// "next" and "last".
+    fn handle_window_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('h') => self.focus = Focus::Columns,
+            KeyCode::Char('l') => self.enter_preview(),
+            KeyCode::Char('w') => match self.focus {
+                Focus::Columns => self.enter_preview(),
+                _ => self.focus = Focus::Columns,
+            },
+            // an unmapped window key does nothing, as in vim, rather than
+            // falling through to be typed into the query
+            _ => {}
+        }
+    }
+
     fn handle(&mut self, code: KeyCode, mods: KeyModifiers) {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         let alt = mods.contains(KeyModifiers::ALT);
+
+        // `^w h` / `^w l` / `^w w`, handled before the per-focus tables so the
+        // prefix works identically from either pane.  Not while the palette is
+        // open: it owns the keyboard, and `w` is a character there.
+        if !matches!(self.focus, Focus::Palette) {
+            if std::mem::take(&mut self.pending_window) {
+                self.handle_window_key(code);
+                return;
+            }
+            if ctrl && code == KeyCode::Char('w') {
+                self.pending_window = true;
+                return;
+            }
+        }
+
         match self.focus {
             Focus::Columns => match code {
                 // M-x, as in Emacs
@@ -709,13 +744,6 @@ impl CompleterState {
                 KeyCode::Char('c' | 'g') if ctrl => self.quit = true,
                 KeyCode::Enter => self.accept(),
                 KeyCode::Tab => self.commit(),
-                // Shift-Tab, not Ctrl-Tab: Ctrl-Tab is indistinguishable
-                // from Tab here (measured — it arrives as KeyCode::Tab with
-                // no modifier, even with the kitty disambiguation flag
-                // pushed, since tmux's extended-keys is off).  ^L stays as an
-                // alias for anyone with it in their fingers.
-                KeyCode::BackTab => self.enter_preview(),
-                KeyCode::Char('l') if ctrl => self.enter_preview(),
                 KeyCode::Up => self.active_mut().move_sel(-1),
                 KeyCode::Down => self.active_mut().move_sel(1),
                 KeyCode::Char('p' | 'k') if ctrl => self.active_mut().move_sel(-1),
@@ -753,8 +781,7 @@ impl CompleterState {
                     }
                 }
                 KeyCode::Enter | KeyCode::Tab => self.pivot(),
-                KeyCode::BackTab => self.focus = Focus::Columns,
-                KeyCode::Char('l') if ctrl => self.pivot(),
+
                 // Nothing is typed here, so movement takes the vi and the
                 // readline pair with or without Ctrl — one arm each, rather
                 // than a Ctrl-guarded arm the bare one would shadow.
@@ -1014,7 +1041,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                     n,
                     desc
                 ),
-                "Tab next  ^j/^k move  S-Tab preview  M-x cmds  ↵ accept",
+                "Tab next  ^j/^k move  ^w l preview  M-x cmds  ↵ accept",
             )
         }
         Focus::Preview => {
@@ -1032,7 +1059,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                 if st.visual_from.is_some() {
                     "^j/^k extend  m mark range  v cancel  ↵ act on selection"
                 } else {
-                    "^j/^k move  v visual  m mark  ↵ pivot  S-Tab back"
+                    "^j/^k move  v visual  m mark  ↵ pivot  ^w h back"
                 },
             )
         }
@@ -1203,7 +1230,8 @@ mod tests {
         // surgery on the current text
         let mut st = CompleterState::new("commits ");
         st.frames = vec![commit_frame("cafef00d")];
-        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char('l'), KeyModifiers::NONE);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.active().prefix, "cafef00d ");
 
@@ -1243,7 +1271,8 @@ mod tests {
         // ^j/^k did nothing here
         let mut st = CompleterState::new("commits ");
         st.frames = vec![commit_frame("aaaa"), commit_frame("bbbb")];
-        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char('l'), KeyModifiers::NONE);
         assert_eq!(st.focus, Focus::Preview);
         st.handle(KeyCode::Char('j'), KeyModifiers::CONTROL);
         assert_eq!(st.preview_sel, 1, "^j did not move in the preview");
@@ -1265,38 +1294,55 @@ mod tests {
         assert_eq!(st.palette_query, "", "^j/^k leaked into the filter");
     }
 
+    fn ctrl_w(st: &mut CompleterState, k: char) {
+        st.handle(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char(k), KeyModifiers::NONE);
+    }
+
     #[test]
-    fn shift_tab_toggles_focus_between_the_column_and_the_preview() {
-        // Ctrl-Tab cannot be used: it arrives as plain Tab with no modifier
-        // (measured through crossterm under tmux), so it would shadow the
-        // commit key rather than switch focus
+    fn ctrl_w_h_and_l_move_focus_like_vim_windows() {
         let mut st = CompleterState::new("commits ");
         st.frames = vec![commit_frame("aaaa")];
-        st.handle(KeyCode::BackTab, KeyModifiers::SHIFT);
+        ctrl_w(&mut st, 'l');
         assert_eq!(st.focus, Focus::Preview);
-        st.handle(KeyCode::BackTab, KeyModifiers::SHIFT);
+        ctrl_w(&mut st, 'h');
         assert_eq!(st.focus, Focus::Columns);
     }
 
     #[test]
-    fn shift_tab_no_longer_moves_the_selection() {
-        // it used to duplicate Up; Up and ^k/^p still do that job
+    fn ctrl_w_w_goes_to_the_other_pane_from_either_side() {
         let mut st = CompleterState::new("commits ");
         st.frames = vec![commit_frame("aaaa")];
-        st.active_mut().move_sel(2);
-        let before = st.active().selected;
-        st.handle(KeyCode::BackTab, KeyModifiers::SHIFT);
-        assert_eq!(st.active().selected, before);
-        st.handle(KeyCode::BackTab, KeyModifiers::SHIFT); // back to columns
-        st.handle(KeyCode::Up, KeyModifiers::NONE);
-        assert_eq!(st.active().selected, before - 1, "Up stopped moving");
+        ctrl_w(&mut st, 'w');
+        assert_eq!(st.focus, Focus::Preview);
+        ctrl_w(&mut st, 'w');
+        assert_eq!(st.focus, Focus::Columns);
     }
 
     #[test]
-    fn shift_tab_into_an_empty_preview_is_a_no_op() {
+    fn the_key_after_ctrl_w_is_never_typed_into_the_query() {
+        // an unmapped window key does nothing, as in vim
+        let mut st = CompleterState::new("commits ");
+        ctrl_w(&mut st, 'z');
+        assert_eq!(st.active().query, "");
+        assert_eq!(st.focus, Focus::Columns);
+        ctrl_w(&mut st, 'h');
+        assert_eq!(st.active().query, "", "a window key was typed");
+    }
+
+    #[test]
+    fn ctrl_l_no_longer_switches_focus() {
+        let mut st = CompleterState::new("commits ");
+        st.frames = vec![commit_frame("aaaa")];
+        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(st.focus, Focus::Columns);
+    }
+
+    #[test]
+    fn ctrl_w_l_into_an_empty_preview_is_a_no_op() {
         let mut st = CompleterState::new("commits ");
         st.frames.clear();
-        st.handle(KeyCode::BackTab, KeyModifiers::SHIFT);
+        ctrl_w(&mut st, 'l');
         assert_eq!(st.focus, Focus::Columns);
     }
 
@@ -1306,7 +1352,8 @@ mod tests {
         // stand in a known preview rather than depend on the repo's frames
         st.frames = vec![commit_frame("cafef00d")];
         st.message = None;
-        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char('l'), KeyModifiers::NONE);
         assert_eq!(st.focus, Focus::Preview);
         st.handle(KeyCode::Enter, KeyModifiers::NONE); // pivot on the frame
         assert_eq!(st.focus, Focus::Columns);
@@ -1368,7 +1415,8 @@ mod tests {
     fn drilling_an_empty_preview_is_a_no_op() {
         let mut st = CompleterState::new("commits ");
         st.frames.clear();
-        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char('l'), KeyModifiers::NONE);
         assert_eq!(st.focus, Focus::Columns);
     }
 
@@ -1377,7 +1425,8 @@ mod tests {
     fn previewing(n: usize) -> CompleterState {
         let mut st = CompleterState::new("commits ");
         st.frames = (0..n).map(|i| commit_frame(&format!("sha{i}"))).collect();
-        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char('l'), KeyModifiers::NONE);
         assert_eq!(st.focus, Focus::Preview);
         st
     }
