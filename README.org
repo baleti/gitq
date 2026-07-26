@@ -304,6 +304,10 @@ the pipeline the highlighted candidate would produce on the right:
   the cursor.  =↵= then acts on the whole selection, which becomes a
   positional step on the query you are in (=commits [0..3,5..7]=) rather
   than hidden state.
+- the preview is headed by a line of stats for what it is showing —
+  =5 hunks · 2 files · 3 commits · +209 -10=, or authors and a date span
+  for commits — because a count alone does not distinguish 853 hunks across
+  4 files from 853 across 200.
 - =^L= steps into the preview and =^H= back (=^w l= / =^w h= / =^w w= also
   work, as in vim's window commands): the result frames become a selectable
   list,

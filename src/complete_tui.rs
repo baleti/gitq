@@ -47,7 +47,7 @@ use ratatui::Terminal;
 use crate::ast::Step;
 use crate::complete::{annotate, complete_candidates};
 use crate::exec::exec_pipeline;
-use crate::frame::Frame;
+use crate::frame::{Frame, FrameType, Value};
 use crate::git::{toplevel, GitqError};
 use crate::parse::parse_pipeline;
 use crate::render::render_frame_line;
@@ -148,6 +148,112 @@ fn grep_highlight(pipeline: &str) -> Option<regex::Regex> {
         }
         _ => None,
     })
+}
+
+/// A one-line summary of what the preview is showing, by frame shape.
+///
+/// Count alone answers little: 853 hunks across 4 files is a different
+/// result from 853 across 200, and the query that produced it is usually
+/// being narrowed towards one of those.  Each shape gets the few facts that
+/// distinguish results of that shape, and nothing else — a stats line long
+/// enough to wrap costs more than it tells.
+fn preview_stats(frames: &[Frame]) -> String {
+    let n = frames.len();
+    if n == 0 {
+        return String::new();
+    }
+    let distinct = |field: &str| -> usize {
+        frames
+            .iter()
+            .filter_map(|f| match f.field(field) {
+                Some(Value::Str(s)) => Some(s.to_string()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .len()
+    };
+    let plural = |n: usize, one: &str| {
+        if n == 1 {
+            format!("1 {one}")
+        } else {
+            format!("{n} {one}s")
+        }
+    };
+    let span = || -> Option<String> {
+        let mut dates: Vec<String> = frames
+            .iter()
+            .filter_map(|f| match f.field("date") {
+                Some(Value::Str(s)) => Some(s.to_string()),
+                _ => None,
+            })
+            .collect();
+        dates.sort();
+        let (a, b) = (dates.first()?, dates.last()?);
+        let day = |d: &str| d.chars().take(10).collect::<String>();
+        Some(if day(a) == day(b) {
+            day(a)
+        } else {
+            format!("{}..{}", day(a), day(b))
+        })
+    };
+
+    let mut parts = Vec::new();
+    match frames[0].ty {
+        FrameType::Hunk | FrameType::DiffLine | FrameType::Line => {
+            parts.push(plural(
+                n,
+                if frames[0].ty == FrameType::Hunk {
+                    "hunk"
+                } else {
+                    "line"
+                },
+            ));
+            parts.push(plural(distinct("path"), "file"));
+            let commits = distinct("commit-sha");
+            if commits > 0 {
+                parts.push(plural(commits, "commit"));
+            }
+            // +/- counted off the diff bodies, so it reflects what is shown
+            let (mut add, mut del) = (0usize, 0usize);
+            for f in frames {
+                if let Some(Value::Str(c)) = f.field("content") {
+                    for l in c.lines() {
+                        match l.as_bytes().first() {
+                            Some(b'+') => add += 1,
+                            Some(b'-') => del += 1,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            if add + del > 0 {
+                parts.push(format!("+{add} -{del}"));
+            }
+        }
+        FrameType::Commit => {
+            parts.push(plural(n, "commit"));
+            parts.push(plural(distinct("author"), "author"));
+            if let Some(s) = span() {
+                parts.push(s);
+            }
+        }
+        FrameType::Ref => {
+            parts.push(plural(n, "ref"));
+        }
+        FrameType::Blob | FrameType::Tree => {
+            parts.push(plural(n, "path"));
+        }
+        FrameType::Worktree => {
+            parts.push(plural(n, "worktree"));
+        }
+        FrameType::Diff => {
+            parts.push(plural(n, "diff"));
+            parts.push(plural(distinct("path"), "file"));
+        }
+        // a projection has no shape of its own to summarise
+        FrameType::Projection => parts.push(plural(n, "row")),
+    }
+    parts.join("  ·  ")
 }
 
 /// A diff row's colour, by the prefix git gave it.  Row 0 of a frame is
@@ -1165,7 +1271,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
     // Titled with the pipeline it is actually previewing — which is the line
     // only up to the cursor, so moving back into an earlier token has a
     // visible explanation rather than looking like stale results.
-    let pv = cells[1];
+    let pv_outer = cells[1];
     let shown_pipeline = st.effective();
     let pv_block = Block::default()
         .borders(Borders::TOP)
@@ -1174,6 +1280,21 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
         } else {
             format!(" {shown_pipeline} ")
         });
+    // the block is drawn on its own so a stats line can sit inside it,
+    // above the results, without becoming a selectable row of the list
+    let inner = pv_block.inner(pv_outer);
+    f.render_widget(pv_block, pv_outer);
+    let stats = preview_stats(&st.frames);
+    let pv = if stats.is_empty() {
+        inner
+    } else {
+        let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+        f.render_widget(
+            Paragraph::new(stats).style(Style::default().fg(Color::DarkGray)),
+            rows[0],
+        );
+        rows[1]
+    };
     if st.focus == Focus::Preview {
         let vis = st.visual_range();
         let items: Vec<ListItem> = st
@@ -1224,10 +1345,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
         let mut ls = ListState::default();
         ls.select(Some(st.preview_sel));
         f.render_stateful_widget(
-            List::new(items)
-                .block(pv_block)
-                .highlight_style(sel)
-                .highlight_symbol("▌"),
+            List::new(items).highlight_style(sel).highlight_symbol("▌"),
             pv,
             &mut ls,
         );
@@ -1247,16 +1365,10 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                     .collect::<Vec<_>>()
             })
             .collect();
-        f.render_widget(
-            Paragraph::new(lines)
-                .block(pv_block)
-                .wrap(Wrap { trim: false }),
-            pv,
-        );
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), pv);
     } else {
         f.render_widget(
             Paragraph::new(st.message.clone().unwrap_or_default())
-                .block(pv_block)
                 .style(dim)
                 .wrap(Wrap { trim: false }),
             pv,
@@ -1807,6 +1919,60 @@ mod tests {
         st.handle(KeyCode::Char('w'), KeyModifiers::CONTROL);
         st.handle(KeyCode::Char('l'), KeyModifiers::NONE);
         assert_eq!(st.focus, Focus::Columns);
+    }
+
+    // --- preview stats -----------------------------------------------------
+
+    fn hunk(path: &str, sha: &str, body: &str) -> Frame {
+        Frame::new(
+            FrameType::Hunk,
+            [
+                ("path", Value::from(path)),
+                ("commit-sha", Value::from(sha)),
+                ("content", Value::from(body)),
+            ],
+        )
+    }
+
+    #[test]
+    fn hunk_stats_count_files_commits_and_line_deltas() {
+        let fs = vec![
+            hunk("a.rs", "s1", "+one\n-two\n ctx\n"),
+            hunk("a.rs", "s2", "+three\n"),
+            hunk("b.rs", "s2", "-four\n"),
+        ];
+        let s = preview_stats(&fs);
+        assert!(s.contains("3 hunks"), "{s}");
+        assert!(s.contains("2 files"), "{s}");
+        assert!(s.contains("2 commits"), "{s}");
+        // context lines count as neither
+        assert!(s.contains("+2 -2"), "{s}");
+    }
+
+    #[test]
+    fn commit_stats_report_authors_and_the_date_span() {
+        let c = |a: &str, d: &str| {
+            Frame::new(
+                FrameType::Commit,
+                [("author", Value::from(a)), ("date", Value::from(d))],
+            )
+        };
+        let s = preview_stats(&[
+            c("alice", "2026-07-01 10:00:00 +0000"),
+            c("bob", "2026-07-05 10:00:00 +0000"),
+        ]);
+        assert!(s.contains("2 commits"), "{s}");
+        assert!(s.contains("2 authors"), "{s}");
+        assert!(s.contains("2026-07-01..2026-07-05"), "{s}");
+        // a single day collapses rather than repeating itself
+        let s = preview_stats(&[c("alice", "2026-07-01 10:00:00 +0000")]);
+        assert!(s.contains("2026-07-01") && !s.contains(".."), "{s}");
+        assert!(s.contains("1 commit") && !s.contains("1 commits"), "{s}");
+    }
+
+    #[test]
+    fn stats_are_empty_for_an_empty_result() {
+        assert_eq!(preview_stats(&[]), "");
     }
 
     // --- preview styling ---------------------------------------------------
