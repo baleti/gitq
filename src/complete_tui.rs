@@ -355,20 +355,32 @@ impl Column {
         self.sync();
     }
 
-    /// The pipeline this column stands for: the line as typed, with the token
-    /// under the cursor completed by the highlighted candidate when there is
-    /// something to complete.
+    /// The pipeline the *preview* should show: the line with the highlighted
+    /// candidate standing in at the cursor.
+    ///
+    /// It takes the candidate even when nothing has been typed, which is what
+    /// makes the preview useful the moment the completer opens — `commits` is
+    /// highlighted, so its commits are what you see, and moving down shows
+    /// what each source would give.  A preview that waited for you to type
+    /// first would leave the opening screen blank, teaching nothing.
+    ///
+    /// This is deliberately *not* what Enter accepts.  Enter takes the line as
+    /// typed (see `accept`), because a highlight is where a menu opened, not
+    /// a choice the user made; the preview showing more than Enter commits is
+    /// the point of a preview.
     fn effective(&self) -> String {
-        let q = self.query();
-        match (q.is_empty(), self.highlighted()) {
-            (false, Some(c)) => {
-                let head = self.prefix();
-                format!("{head}{}{}", c.text, &self.line[self.cursor..])
-                    .trim()
-                    .to_string()
-            }
-            _ => self.line.trim().to_string(),
-        }
+        let Some(c) = self.highlighted() else {
+            return self.line.trim().to_string();
+        };
+        let head = self.prefix();
+        let tail = &self.line[self.cursor..];
+        // keep a separator when substituting into the middle of a line
+        let sep = if tail.is_empty() || tail.starts_with(char::is_whitespace) {
+            ""
+        } else {
+            " "
+        };
+        format!("{head}{}{sep}{tail}", c.text).trim().to_string()
     }
 
     // --- editing ---------------------------------------------------------
@@ -1560,6 +1572,49 @@ mod tests {
         st.handle(KeyCode::Tab, KeyModifiers::NONE);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.accepted.as_deref(), Some("commits in"));
+    }
+
+    #[test]
+    fn the_preview_is_populated_the_moment_the_completer_opens() {
+        // nothing typed, `commits` merely highlighted — the preview must
+        // already show what it would produce, or the opening screen teaches
+        // nothing about what the tool does
+        let st = CompleterState::new("");
+        assert_eq!(
+            st.active().highlighted().map(|c| c.text.as_str()),
+            Some("commits")
+        );
+        assert_eq!(st.effective(), "commits");
+        assert!(!st.frames.is_empty(), "preview blank on open");
+    }
+
+    #[test]
+    fn the_preview_follows_the_highlight_but_enter_does_not() {
+        // the two rules differ on purpose: the preview shows what the
+        // highlight *would* give, Enter takes only what is on the line
+        let mut st = CompleterState::new("");
+        st.handle(KeyCode::Char('n'), KeyModifiers::CONTROL); // next source
+        let hl = st.active().highlighted().unwrap().text.clone();
+        assert_eq!(
+            st.effective(),
+            hl,
+            "preview stopped following the highlight"
+        );
+        st.handle(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(st.accepted.as_deref(), Some(""), "Enter took the highlight");
+    }
+
+    #[test]
+    fn substituting_into_the_middle_of_a_line_keeps_a_separator() {
+        let mut st = CompleterState::new("commits  where");
+        // cursor between the two spaces: empty query, non-empty tail
+        st.active_mut().move_cursor(9);
+        assert_eq!(st.active().query(), "");
+        assert!(
+            !st.effective().contains("where") || st.effective().contains(" where"),
+            "candidate ran into the following token: {}",
+            st.effective()
+        );
     }
 
     #[test]
