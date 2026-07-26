@@ -189,14 +189,29 @@ gitq-complete-tui-widget() {
   # through a file: the popup runs its command in a separate pane, so the
   # widget cannot read its stdout directly.  `-E` closes the popup when gitq
   # exits and propagates its exit status.
-  local result ret tmp
+  local result ret tmp err
   if [[ -n $TMUX ]] && (( $+commands[tmux] )); then
-    tmp=$(mktemp "${TMPDIR:-/tmp}/gitq-tui.XXXXXX") || return
-    tmux display-popup -E -w "${GITQ_POPUP_WIDTH:-90%}" -h "${GITQ_POPUP_HEIGHT:-80%}" \
-      "gitq --complete-tui ${(q)pipeline} > ${(q)tmp}"
+    if ! tmp=$(mktemp "${TMPDIR:-/tmp}/gitq-tui.XXXXXX"); then
+      zle -M "gitq: could not create a temp file"
+      return 1
+    fi
+    # `zle -I` first: zle owns the display until told otherwise, and a
+    # full-screen program drawing underneath it can be painted over.
+    zle -I
+    # tmux's own errors (no such command on <3.2, a popup that will not fit)
+    # go to stderr and would otherwise vanish, leaving TAB looking dead.
+    err=$(tmux display-popup -E -w "${GITQ_POPUP_WIDTH:-90%}" -h "${GITQ_POPUP_HEIGHT:-80%}" \
+      "gitq --complete-tui ${(q)pipeline} > ${(q)tmp}" 2>&1 >/dev/null)
     ret=$?
     result=$(<$tmp)
     rm -f $tmp
+    if [[ -n $err ]]; then
+      zle -M "gitq: tmux popup failed: $err"
+      # a popup that could not open is not a cancelled completion; fall back
+      # rather than leaving the user with nothing
+      result=$(gitq --complete-tui "$pipeline")
+      ret=$?
+    fi
   else
     result=$(gitq --complete-tui "$pipeline")
     ret=$?
