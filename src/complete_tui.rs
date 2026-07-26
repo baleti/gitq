@@ -369,18 +369,32 @@ impl Column {
     /// a choice the user made; the preview showing more than Enter commits is
     /// the point of a preview.
     fn effective(&self) -> String {
+        match self.highlighted() {
+            // deliberately drops everything after the cursor: the preview
+            // answers "what does the pipeline mean *here*", so putting the
+            // cursor back inside `commits` shows commits, not the result of
+            // steps the cursor has not reached yet
+            Some(c) => format!("{}{}", self.prefix(), c.text).trim().to_string(),
+            None => self.line[..self.cursor].trim().to_string(),
+        }
+    }
+
+    /// The whole line with the token under the cursor completed — what Enter
+    /// accepts.  Unlike [`effective`](Self::effective) this keeps the tail,
+    /// since accepting must not silently drop the rest of the pipeline.
+    fn completed_line(&self) -> String {
         let Some(c) = self.highlighted() else {
             return self.line.trim().to_string();
         };
-        let head = self.prefix();
-        let tail = &self.line[self.cursor..];
-        // keep a separator when substituting into the middle of a line
+        let tail = &self.line[self.token_end()..];
         let sep = if tail.is_empty() || tail.starts_with(char::is_whitespace) {
             ""
         } else {
             " "
         };
-        format!("{head}{}{sep}{tail}", c.text).trim().to_string()
+        format!("{}{}{sep}{tail}", self.prefix(), c.text)
+            .trim()
+            .to_string()
     }
 
     // --- editing ---------------------------------------------------------
@@ -416,6 +430,17 @@ impl Column {
         match trimmed.rfind(char::is_whitespace) {
             Some(i) => i + 1,
             None => 0,
+        }
+    }
+
+    /// End of the token the cursor is inside — where a completion's
+    /// replacement stops.  Not the cursor: completing `comm|its` must replace
+    /// the whole word, or the unconsumed tail is left behind
+    /// (`commits` + `its ...`).
+    fn token_end(&self) -> usize {
+        match self.line[self.cursor..].find(char::is_whitespace) {
+            Some(i) => self.cursor + i,
+            None => self.line.len(),
         }
     }
 
@@ -635,9 +660,17 @@ impl CompleterState {
             return;
         };
         let head = col.prefix();
-        let tail = col.line[col.cursor..].to_string();
-        let cursor = head.len() + cand.len() + 1;
-        let line = format!("{head}{cand} {tail}");
+        // from the end of the token, not the cursor: Tab replaces the whole
+        // word being completed
+        let tail = col.line[col.token_end()..].to_string();
+        // a space after the candidate, unless the tail already supplies one
+        let sep = if tail.starts_with(char::is_whitespace) {
+            ""
+        } else {
+            " "
+        };
+        let cursor = head.len() + cand.len() + sep.len();
+        let line = format!("{head}{cand}{sep}{tail}");
         let col = self.active_mut();
         col.line = line;
         col.cursor = cursor.min(col.line.len());
@@ -786,7 +819,7 @@ impl CompleterState {
         self.accepted = Some(if col.query().is_empty() {
             col.line.trim().to_string()
         } else {
-            col.effective()
+            col.completed_line()
         });
         self.quit = true;
     }
@@ -1057,11 +1090,22 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
     .split(f.area());
 
     // prompt: the pipeline built so far, then the active query under a caret
+    let col0 = st.active();
+    let rev = Style::default().add_modifier(Modifier::REVERSED);
+    let (cursor_glyph, after_cursor) = match col0.line[col0.cursor..].chars().next() {
+        Some(c) => (c.to_string(), &col0.line[col0.cursor + c.len_utf8()..]),
+        // at end of line: a reversed space stands in, taking one cell that
+        // was already blank
+        None => (" ".to_string(), ""),
+    };
     let prompt = Line::from(vec![
         Span::styled("gitq❯ ", cyan),
-        Span::raw(st.active().line[..st.active().cursor].to_string()),
-        Span::styled("▮", cyan),
-        Span::raw(st.active().line[st.active().cursor..].to_string()),
+        Span::raw(col0.line[..col0.cursor].to_string()),
+        // reverse video *on* the character, the way a shell draws a cursor.
+        // Inserting a block glyph instead shifted every following character
+        // one cell right as the cursor moved.
+        Span::styled(cursor_glyph.clone(), rev),
+        Span::raw(after_cursor.to_string()),
     ]);
     f.render_widget(Paragraph::new(prompt), rows[0]);
 
@@ -1121,8 +1165,19 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
         &mut ls,
     );
 
-    // preview cell: an interactive frame list when focused, else text
+    // preview cell: an interactive frame list when focused, else text.
+    // Titled with the pipeline it is actually previewing — which is the line
+    // only up to the cursor, so moving back into an earlier token has a
+    // visible explanation rather than looking like stale results.
     let pv = cells[1];
+    let shown_pipeline = st.effective();
+    let pv_block = Block::default()
+        .borders(Borders::TOP)
+        .title(if shown_pipeline.is_empty() {
+            " (nothing to preview) ".to_string()
+        } else {
+            format!(" {shown_pipeline} ")
+        });
     if st.focus == Focus::Preview {
         let vis = st.visual_range();
         let items: Vec<ListItem> = st
@@ -1155,18 +1210,24 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
         let mut ls = ListState::default();
         ls.select(Some(st.preview_sel));
         f.render_stateful_widget(
-            List::new(items).highlight_style(sel).highlight_symbol("▌"),
+            List::new(items)
+                .block(pv_block)
+                .highlight_style(sel)
+                .highlight_symbol("▌"),
             pv,
             &mut ls,
         );
     } else if !st.frames.is_empty() {
         f.render_widget(
-            Paragraph::new(render_frames_text(&st.frames)).wrap(Wrap { trim: false }),
+            Paragraph::new(render_frames_text(&st.frames))
+                .block(pv_block)
+                .wrap(Wrap { trim: false }),
             pv,
         );
     } else {
         f.render_widget(
             Paragraph::new(st.message.clone().unwrap_or_default())
+                .block(pv_block)
                 .style(dim)
                 .wrap(Wrap { trim: false }),
             pv,
@@ -1594,6 +1655,38 @@ mod tests {
         st.handle(KeyCode::Tab, KeyModifiers::NONE);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.accepted.as_deref(), Some("commits in"));
+    }
+
+    #[test]
+    fn tab_mid_token_replaces_the_whole_word() {
+        // regression: completing `comm|its` left the tail behind, giving
+        // `commits its`
+        let mut st = CompleterState::new("commits in main");
+        st.active_mut().move_cursor(4);
+        st.handle(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(st.active().line, "commits in main");
+    }
+
+    #[test]
+    fn the_preview_stops_at_the_cursor() {
+        // cursor back inside `commits`: the preview answers what the pipeline
+        // means *there*, so the later steps are not applied
+        let mut st = CompleterState::new("commits in main");
+        st.active_mut().move_cursor(4); // inside `commits`
+        assert_eq!(st.active().query(), "comm");
+        assert_eq!(st.effective(), "commits");
+    }
+
+    #[test]
+    fn accepting_keeps_the_tail_the_preview_dropped() {
+        // the preview may stop at the cursor; Enter must not silently discard
+        // the rest of the line
+        let mut st = CompleterState::new("commits in main");
+        st.active_mut().move_cursor(4);
+        assert_eq!(st.effective(), "commits");
+        assert_eq!(st.active().completed_line(), "commits in main");
+        st.handle(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(st.accepted.as_deref(), Some("commits in main"));
     }
 
     #[test]
