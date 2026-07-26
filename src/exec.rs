@@ -41,7 +41,7 @@ pub fn exec_pipeline(p: &Pipeline) -> R<(Vec<Frame>, Option<Terminal>)> {
 
 pub fn exec_source(src: &Source) -> R<Vec<Frame>> {
     Ok(match src {
-        Source::Commits(range) => fetch_commits(range.as_deref()),
+        Source::Commits(range) => fetch_commits(range.as_deref())?,
         Source::Ref(r) => fetch_commit(r).into_iter().collect(),
         Source::Branches => fetch_branches(),
         Source::Tags => fetch_tags(),
@@ -550,6 +550,7 @@ fn via_parent_adjoint(frames: &[Frame]) -> Vec<Frame> {
         .filter_map(|f| str_field(f, "sha").map(|s| s.to_string()))
         .collect();
     fetch_commits(None)
+        .unwrap_or_default()
         .into_iter()
         .filter(|c| c.parents.iter().any(|p| targets.contains(p.as_ref())))
         .collect()
