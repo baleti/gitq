@@ -66,6 +66,9 @@ pub enum Step {
     Where(Vec<Cond>),
     /// Pattern, is-regex.
     Grep(String, bool),
+    /// Pattern, is-regex — `grep` on a frame that already carries `content`.
+    /// A filter rather than a search: the shape is unchanged.
+    GrepContent(String, bool),
     /// Pattern, is-regex.
     Pickaxe(String, bool),
     /// Glob.

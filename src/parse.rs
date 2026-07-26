@@ -280,16 +280,26 @@ pub fn parse_step<'a>(
         }
 
         "grep" => {
-            require_field(&f, "sha", "grep")?;
+            // `grep` means "search the text here", and what the text *is*
+            // depends on the shape.  A frame carrying `content` (a hunk, a
+            // line, a diff-line) is already text, so grep filters it and
+            // keeps the shape.  A commit is not text — its text is its tree —
+            // so grep searches that and yields the matching lines.
+            let on_content = f.iter().any(|x| x == "content");
+            if !on_content {
+                require_field(&f, "sha", "grep")?;
+            }
             let Some(pat_tok) = toks.first() else {
                 return perr("gitq: 'grep' requires a pattern");
             };
             let is_re = matches!(pat_tok, Token::Regex(_));
-            Ok((
-                vec![Step::Grep(pat_tok.text().to_string(), is_re)],
-                &toks[1..],
-                owned(LINE_FIELDS),
-            ))
+            let pat = pat_tok.text().to_string();
+            let (step, fields) = if on_content {
+                (Step::GrepContent(pat, is_re), f)
+            } else {
+                (Step::Grep(pat, is_re), owned(LINE_FIELDS))
+            };
+            Ok((vec![step], &toks[1..], fields))
         }
 
         "pickaxe" => {
@@ -1334,6 +1344,43 @@ mod tests {
         let e = parse_pipeline("commits nonsense").unwrap_err().to_string();
         assert!(e.contains("expected step keyword"), "{e}");
         assert!(!e.contains("quote the whole value"), "noisy hint: {e}");
+    }
+
+    #[test]
+    fn grep_filters_content_where_there_is_content_and_searches_trees_otherwise() {
+        // a hunk is already text: grep filters it and the shape survives
+        assert_eq!(
+            ok(r#"hunks grep "popup""#).steps,
+            vec![Step::GrepContent("popup".into(), false)]
+        );
+        // the shape survives, so hunk fields are still there afterwards
+        // (`path` would be read as the step keyword, so use another one)
+        assert!(p(r#"hunks grep "popup" where start-line == 61"#).is_ok());
+
+        // a commit is not text — its text is its tree — so grep searches that
+        // and yields the matching lines
+        assert_eq!(
+            ok(r#"commits grep "popup""#).steps,
+            vec![Step::Grep("popup".into(), false)]
+        );
+        assert!(
+            p(r#"commits grep "popup" where content x"#).is_ok(),
+            "commits grep should yield line frames"
+        );
+    }
+
+    #[test]
+    fn a_slashed_pattern_greps_content_as_a_regex() {
+        assert_eq!(
+            ok("hunks grep /pop.p/").steps,
+            vec![Step::GrepContent("pop.p".into(), true)]
+        );
+    }
+
+    #[test]
+    fn grep_still_needs_a_pattern_and_a_shape_it_can_search() {
+        err("hunks grep", "requires a pattern");
+        err("commits pick author grep x", "needs a 'sha' field");
     }
 
     #[test]
