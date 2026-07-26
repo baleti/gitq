@@ -258,5 +258,14 @@ lacks a field it pins on."
                          "[1]")))
       (kill-buffer buf))))
 
+(ert-deftest gitq-test-match-faces-are-backgrounds ()
+  "Highlights must colour the background, never the foreground.
+`match\=' is a foreground colour, and in doom-one it is byte-identical to
+`diff-added\=' — so a match inside an added line was invisible."
+  (dolist (f (cons gitq-match-face gitq-match-faces))
+    (let ((plist (cdr (car (get f 'face-defface-spec)))))
+      (should (string-prefix-p "hi-" (symbol-name (plist-get plist :inherit))))
+      (should (plist-get plist :foreground)))))
+
 (provide 'gitq-tests)
 ;;; gitq-tests.el ends here

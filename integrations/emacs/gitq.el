@@ -54,10 +54,21 @@ them on every debounced keystroke is what makes typing feel laggy.  The
 final run (RET) always renders everything."
   :type 'natnum :group 'gitq)
 
-(defcustom gitq-match-face 'match
-  "Face used to highlight query matches in the results buffer.
-Defaults to the standard `match' face, the same one grep and occur
-buffers use.  Used for the first search term; see `gitq-match-faces'."
+(defface gitq-match-1 '((t :inherit hi-yellow :foreground "black"))
+  "Face for the first search term in a results buffer.
+Inherits `hi-yellow', so it follows the current theme.
+
+A *background* highlight, deliberately.  The obvious choice, `match', is
+a foreground colour — and in doom-one it is #99bb66, byte-identical to
+`diff-added', so a match inside an added line was invisible.  A
+background survives whatever colour the line already carries, and the
+explicit foreground keeps the text legible on top of it."
+  :group 'gitq)
+
+(defcustom gitq-match-face 'gitq-match-1
+  "Face used to highlight the first search term in the results buffer.
+See `gitq-match-faces' for the rest, and `gitq-match-1' for why this is a
+background rather than the standard `match' face."
   :type 'face :group 'gitq)
 
 ;; `hi-lock' is built in, and its faces are the standard set for
@@ -66,19 +77,21 @@ buffers use.  Used for the first search term; see `gitq-match-faces'."
 ;; theme's own palette instead of hardcoded hex that fights it.
 (require 'hi-lock)
 
-(defface gitq-match-2 '((t :inherit hi-blue))
+(defface gitq-match-2 '((t :inherit hi-blue :foreground "black"))
   "Face for the second search term in a results buffer.
 Inherits `hi-blue', so it follows the current theme."
   :group 'gitq)
 
-(defface gitq-match-3 '((t :inherit hi-pink))
+(defface gitq-match-3 '((t :inherit hi-pink :foreground "black"))
   "Face for the third search term in a results buffer.
 Inherits `hi-pink', so it follows the current theme."
   :group 'gitq)
 
-(defface gitq-match-4 '((t :inherit hi-yellow))
+(defface gitq-match-4 '((t :inherit hi-green :foreground "black"))
   "Face for the fourth search term in a results buffer.
-Inherits `hi-yellow', so it follows the current theme."
+Inherits `hi-green', so it follows the current theme.  Green is safe here
+because this is a background: it is the *foreground* green of `match' and
+`diff-added' that collided."
   :group 'gitq)
 
 (defcustom gitq-match-faces '(gitq-match-2 gitq-match-3 gitq-match-4)
