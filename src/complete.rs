@@ -95,11 +95,27 @@ pub fn complete_candidates(input: &str) -> Vec<String> {
     // implicit-contains-eligible types) value candidates
     if let Some(field_tok) = last_text {
         let fields = current_type_fields(ctx);
-        if enclosing_step(ctx).as_deref() == Some("where") && fields.iter().any(|f| f == field_tok)
-        {
-            let mut out = strs(COMPLETE_WHERE_OPERATORS);
-            if implicit_op(field_type(field_tok)).is_some() {
-                out.extend(complete_where_values(field_tok, None));
+        // a dotted path is typed by the field it ends in, so `commit.date`
+        // offers the date operators just as a bare `date` would
+        let resolved = match crate::parse::split_path(field_tok) {
+            Some((m, sub)) if m == crate::parse::VIA_COMMIT && COMMIT_FIELDS.contains(&sub) => {
+                Some(sub)
+            }
+            _ if fields.iter().any(|f| f == field_tok) => Some(field_tok),
+            _ => None,
+        };
+        if let (Some("where"), Some(field)) = (enclosing_step(ctx).as_deref(), resolved) {
+            // only the operators this field's type accepts: `>` on a date
+            // is a parse error, so offering it is a wrong suggestion rather
+            // than a harmless one
+            let ft = field_type(field);
+            let mut out: Vec<String> = COMPLETE_WHERE_OPERATORS
+                .iter()
+                .filter(|o| operator_signature(o).is_some_and(|sig| sig.contains(&ft)))
+                .map(|o| (*o).to_string())
+                .collect();
+            if implicit_op(field_type(field)).is_some() {
+                out.extend(complete_where_values(field, None));
             }
             return out;
         }
@@ -122,7 +138,15 @@ pub fn complete_candidates(input: &str) -> Vec<String> {
     if let Some(op) = last_text {
         if COMPLETE_WHERE_OPERATORS.contains(&op) {
             return match prev.map(Token::text) {
-                Some(field) => complete_where_values(field, Some(op)),
+                // the value domain follows the field a dotted path ends in,
+                // so `commit.date after` offers dates like `date after` does
+                Some(field) => {
+                    let field = match crate::parse::split_path(field) {
+                        Some((m, sub)) if m == crate::parse::VIA_COMMIT => sub,
+                        _ => field,
+                    };
+                    complete_where_values(field, Some(op))
+                }
                 None => Vec::new(),
             };
         }
@@ -277,6 +301,29 @@ mod tests {
     }
 
     #[test]
+    fn a_dotted_path_completes_like_the_field_it_ends_in() {
+        // operators for the *commit* field's type, then its value domain
+        let ops = c("hunks where commit.date ");
+        assert!(ops.contains(&"after".to_string()), "no 'after': {ops:?}");
+        assert!(ops.contains(&"before".to_string()));
+        assert!(ops.contains(&"within".to_string()));
+        // and values after the operator
+        assert!(!c("hunks where commit.date after ").is_empty());
+    }
+
+    #[test]
+    fn operators_are_filtered_to_the_ones_the_field_accepts() {
+        // `>` on a date is a parse error, so offering it is a wrong
+        // suggestion rather than a harmless one
+        let d = c("commits where date ");
+        assert!(!d.contains(&">".to_string()), "date offered '>'");
+        assert!(d.contains(&"after".to_string()));
+        let n = c("commits where parents-count ");
+        assert!(n.contains(&">".to_string()));
+        assert!(!n.contains(&"after".to_string()), "number offered 'after'");
+    }
+
+    #[test]
     fn dotted_commit_paths_are_offered_where_there_is_a_commit_to_follow() {
         let out = c("hunks where ");
         assert!(out.contains(&"commit.email".to_string()));
@@ -354,10 +401,19 @@ mod tests {
     }
 
     #[test]
-    fn after_a_field_come_the_operators() {
+    fn after_a_field_come_the_operators_its_type_accepts() {
+        // not every operator: `author` is a string, so the numeric
+        // comparisons would be a parse error if suggested
         let out = c("commits where author ");
         for op in OPERATOR_NAMES {
-            assert!(out.contains(&op.to_string()), "missing {op}");
+            let applies =
+                operator_signature(op).is_some_and(|sig| sig.contains(&field_type("author")));
+            assert_eq!(
+                out.contains(&op.to_string()),
+                applies,
+                "operator {op} offered={} but applies={applies}",
+                out.contains(&op.to_string())
+            );
         }
     }
 

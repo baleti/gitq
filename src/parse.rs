@@ -547,7 +547,8 @@ fn parse_where<'a>(
             // type-check against the *commit's* shape, then keep the dotted
             // name so exec knows to follow the path
             let commit_fields = owned(COMMIT_FIELDS);
-            let (mut cond, after) = parse_condition(sub, &rest[1..], &commit_fields)?;
+            let (mut cond, after) =
+                parse_condition_named(sub, &field_tok, &rest[1..], &commit_fields)?;
             cond.field = field_tok;
             acc.push(cond);
             rest = after;
@@ -658,6 +659,19 @@ fn parse_condition<'a>(
     rest: &'a [Token],
     fields: &[String],
 ) -> P<(Cond, &'a [Token])> {
+    parse_condition_named(field_tok, field_tok, rest, fields)
+}
+
+/// As [`parse_condition`], but naming `shown` in errors.  A dotted path is
+/// type-checked against the commit field it ends in, and must still report
+/// itself as the user wrote it — `where commit.date` complaining about
+/// `where date` sends the reader looking for a field they did not name.
+fn parse_condition_named<'a>(
+    field_tok: &str,
+    shown: &str,
+    rest: &'a [Token],
+    fields: &[String],
+) -> P<(Cond, &'a [Token])> {
     let ft = field_type(field_tok);
     let next = rest.first();
 
@@ -674,7 +688,7 @@ fn parse_condition<'a>(
             ))
         } else {
             perr(format!(
-                "gitq: bare 'where {field_tok}' tests a flag, but '{field_tok}' is a {} field (add an operator and value)",
+                "gitq: bare 'where {shown}' tests a flag, but '{shown}' is a {} field (add an operator and value)",
                 ftype_name(ft)
             ))
         };
@@ -695,7 +709,7 @@ fn parse_condition<'a>(
             ))
         } else {
             perr(format!(
-                "gitq: 'where {field_tok}' requires a value; step keyword '{n}' must be quoted: \"{n}\""
+                "gitq: 'where {shown}' requires a value; step keyword '{n}' must be quoted: \"{n}\""
             ))
         };
     }
@@ -715,7 +729,7 @@ fn parse_condition<'a>(
         if let Some(sig) = operator_signature(op_tok) {
             if !sig.contains(&ft) {
                 return perr(format!(
-                    "gitq: operator '{op_tok}' does not apply to '{field_tok}' (a {} field; try: {})",
+                    "gitq: operator '{op_tok}' does not apply to '{shown}' (a {} field; try: {})",
                     ftype_name(ft),
                     ops_for(ft)
                 ));
@@ -767,7 +781,7 @@ fn parse_condition<'a>(
             }
             if ft == FieldType::Number && !matches!(val, Value::Num(_)) {
                 return perr(format!(
-                    "gitq: '{field_tok}' is a number field; '{}' is not a number",
+                    "gitq: '{shown}' is a number field; '{}' is not a number",
                     val_tok.display()
                 ));
             }
@@ -811,7 +825,7 @@ fn parse_condition<'a>(
         };
         if iop == Op::Eq && !matches!(val, Value::Num(_)) {
             return perr(format!(
-                "gitq: '{field_tok}' is a number field; '{}' is not a number",
+                "gitq: '{shown}' is a number field; '{}' is not a number",
                 next.display()
             ));
         }
@@ -1416,6 +1430,21 @@ mod tests {
         );
         // only `commit` is a path today
         err("hunks where tree.path x", "not valid here after 'where'");
+    }
+
+    #[test]
+    fn a_dotted_path_names_itself_in_errors() {
+        // the reader wrote `commit.date`; complaining about `date` sends
+        // them looking for a field they did not name
+        err("hunks where commit.date", "bare 'where commit.date'");
+        err(
+            "hunks where commit.parents-count == x",
+            "'commit.parents-count' is a number field",
+        );
+        err(
+            "hunks where commit.date > 5",
+            "does not apply to 'commit.date'",
+        );
     }
 
     #[test]
