@@ -653,8 +653,27 @@ impl CompleterState {
         self.focus = Focus::Columns;
     }
 
+    /// Enter: accept the pipeline as it stands.
+    ///
+    /// With nothing typed there is no token being completed, so the
+    /// highlighted candidate is only the first row of a menu — appending it
+    /// would add a step the user never asked for.  Tab is how a candidate is
+    /// chosen; Enter takes what is on the line.
+    ///
+    /// It also restores what-you-see-is-what-you-get: with an empty query the
+    /// preview falls back past the unrunnable candidate and shows the
+    /// committed pipeline, so accepting the candidate handed back something
+    /// the preview had never displayed.
+    ///
+    /// With a query typed, the candidate *is* what is being completed, and
+    /// Enter still takes it — `comm` + Enter is `commits`.
     fn accept(&mut self) {
-        self.accepted = Some(self.effective());
+        let col = self.active();
+        self.accepted = Some(if col.query.is_empty() {
+            col.prefix.trim().to_string()
+        } else {
+            col.effective()
+        });
         self.quit = true;
     }
 
@@ -1281,10 +1300,30 @@ mod tests {
     }
 
     #[test]
-    fn enter_accepts_the_active_effective_pipeline() {
+    fn enter_completes_the_token_being_typed() {
         let mut st = CompleterState::new("comm");
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.accepted.as_deref(), Some("commits"));
+    }
+
+    #[test]
+    fn enter_with_nothing_typed_does_not_append_the_highlighted_candidate() {
+        // `commits ` with `in` merely highlighted must accept `commits`
+        let mut st = CompleterState::new("commits ");
+        assert!(
+            st.active().highlighted().is_some(),
+            "no candidate highlighted, test proves nothing"
+        );
+        st.handle(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(st.accepted.as_deref(), Some("commits"));
+    }
+
+    #[test]
+    fn tab_is_still_how_a_candidate_is_taken() {
+        let mut st = CompleterState::new("commits ");
+        st.handle(KeyCode::Tab, KeyModifiers::NONE);
+        st.handle(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(st.accepted.as_deref(), Some("commits in"));
     }
 
     #[test]
