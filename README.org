@@ -257,8 +257,14 @@ than replacing it, and needs it just as little.
 A fuzzy-filtered candidate column on the left and a wide live preview of
 the pipeline the highlighted candidate would produce on the right:
 
-- type to fuzzy-filter the active column; =↵= accepts and puts the pipeline
-  on the command line; =Esc= / =^C= cancel.
+- the query line is an ordinary editable line with readline/emacs keys:
+  =^a= / =^e= ends, =^b= / =^f= and the arrows by character, =M-b= / =M-f=
+  and =^←= / =^→= by word, =⌫= deletes a character, =M-⌫= a word, =^d=
+  forward, =^u= clears.  (=^w= and =^k= keep their gitq meanings — window
+  prefix and selection — so =M-⌫= and =^u= stand in for their readline
+  jobs.)  Typing fuzzy-filters the candidates for whichever token the
+  cursor is in; =↵= accepts and puts the pipeline on the command line;
+  =Esc= / =^C= cancel.
 - =Tab= commits the highlighted candidate and moves the column on to the
   next position, so the pipeline grows one token at a time in the line
   above; =⌫= on an empty query undoes the last move — a committed token, a

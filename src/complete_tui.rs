@@ -261,70 +261,73 @@ fn preview_result(pipeline: &str) -> Result<Vec<Frame>, String> {
 
 // --- state ---------------------------------------------------------------
 
-/// The candidate column: the completion set for the current pipeline
-/// position, plus where it has been.
+/// The pipeline being edited, plus the candidates for wherever the cursor is.
+///
+/// The line is an ordinary editable buffer with a cursor, not a committed
+/// prefix plus a trailing token.  The earlier split made Backspace delete a
+/// whole committed token, which is no way for a line to behave: editing keys
+/// should mean what they mean in a shell, and completion should read the
+/// token the cursor is actually in.
 struct Column {
-    /// Committed pipeline up to (not including) this column; trailing space
-    /// when non-empty.
-    prefix: String,
-    /// Prefixes this column has been at, oldest first.  Backspace on an empty
-    /// query pops one.  A stack rather than string-surgery on `prefix`,
-    /// because a move is not always an extension: drilling onto an object
-    /// *replaces* the pipeline, and the old prefix is not a prefix of the new
-    /// one to trim back to.
-    history: Vec<String>,
-    query: String,
+    line: String,
+    /// Byte offset into `line`; always kept on a char boundary.
+    cursor: usize,
+    /// Candidates for the position the cursor is in, and the prefix they were
+    /// computed for — recomputing on every keystroke would re-run the parser
+    /// for a cursor move that changed nothing.
     all: Vec<Cand>,
+    cand_key: String,
     filtered: Vec<usize>,
     selected: usize,
 }
 
 impl Column {
-    fn new(prefix: String, query: String) -> Self {
+    fn new(line: String, cursor: usize) -> Self {
         let mut c = Column {
-            history: Vec::new(),
-            prefix,
-            query,
+            line,
+            cursor,
             all: Vec::new(),
+            cand_key: String::new(),
             filtered: Vec::new(),
             selected: 0,
         };
-        c.all = candidates_for(&c.prefix);
+        // not `sync()`: an empty `cand_key` equals the prefix of an empty
+        // line, so it would decide nothing had changed and never load
+        c.cand_key = c.prefix();
+        c.all = candidates_for(&c.cand_key);
         c.refilter();
         c
     }
 
-    /// Move this column to a new prefix, remembering where it was.
-    fn move_to(&mut self, prefix: String) {
-        self.history.push(std::mem::take(&mut self.prefix));
-        self.set_prefix(prefix);
+    /// Everything before the token the cursor is in — what candidates are
+    /// computed from.
+    fn prefix(&self) -> String {
+        split_last_token(&self.line[..self.cursor]).0
     }
 
-    /// Step back to the previous prefix, if there is one.
-    fn back(&mut self) -> bool {
-        match self.history.pop() {
-            Some(p) => {
-                self.set_prefix(p);
-                true
-            }
-            None => false,
+    /// The part of the current token before the cursor — the fuzzy query.
+    fn query(&self) -> String {
+        split_last_token(&self.line[..self.cursor]).1
+    }
+
+    /// Reload candidates if the position changed, then refilter.
+    fn sync(&mut self) {
+        let prefix = self.prefix();
+        if prefix != self.cand_key {
+            self.all = candidates_for(&prefix);
+            self.cand_key = prefix;
+            self.selected = 0;
         }
-    }
-
-    fn set_prefix(&mut self, prefix: String) {
-        self.prefix = prefix;
-        self.query.clear();
-        self.selected = 0;
-        self.all = candidates_for(&self.prefix);
         self.refilter();
     }
 
     fn refilter(&mut self) {
+        let q = self.query();
         let mut scored: Vec<(usize, i32)> = self
             .all
             .iter()
             .enumerate()
-            .filter_map(|(i, c)| fuzzy_score(&self.query, &c.text).map(|s| (i, s)))
+            .filter_map(|(i, c)| fuzzy_score(&q, &c.text).map(|s| (i, s)))
             .collect();
         scored.sort_by_key(|&(_, s)| std::cmp::Reverse(s));
         self.filtered = scored.into_iter().map(|(i, _)| i).collect();
@@ -345,19 +348,109 @@ impl Column {
         self.filtered.get(self.selected).map(|&i| &self.all[i])
     }
 
-    /// The token this column contributes: the highlighted candidate, or the
-    /// raw query when nothing matches (a typed-in value).
-    fn current_token(&self) -> String {
-        self.highlighted()
-            .map(|c| c.text.clone())
-            .unwrap_or_else(|| self.query.clone())
+    /// Replace the whole line, putting the cursor at the end.
+    fn set_line(&mut self, line: String) {
+        self.line = line;
+        self.cursor = self.line.len();
+        self.sync();
     }
 
-    /// The pipeline through this column, trimmed.
+    /// The pipeline this column stands for: the line as typed, with the token
+    /// under the cursor completed by the highlighted candidate when there is
+    /// something to complete.
     fn effective(&self) -> String {
-        format!("{}{}", self.prefix, self.current_token())
-            .trim()
-            .to_string()
+        let q = self.query();
+        match (q.is_empty(), self.highlighted()) {
+            (false, Some(c)) => {
+                let head = self.prefix();
+                format!("{head}{}{}", c.text, &self.line[self.cursor..])
+                    .trim()
+                    .to_string()
+            }
+            _ => self.line.trim().to_string(),
+        }
+    }
+
+    // --- editing ---------------------------------------------------------
+
+    fn insert(&mut self, c: char) {
+        self.line.insert(self.cursor, c);
+        self.cursor += c.len_utf8();
+        self.sync();
+    }
+
+    /// Previous char boundary, or the cursor when already at the start.
+    fn prev_boundary(&self) -> usize {
+        self.line[..self.cursor]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(self.cursor)
+    }
+
+    fn next_boundary(&self) -> usize {
+        self.line[self.cursor..]
+            .chars()
+            .next()
+            .map(|c| self.cursor + c.len_utf8())
+            .unwrap_or(self.cursor)
+    }
+
+    /// Start of the word before the cursor, skipping trailing spaces first —
+    /// readline's `backward-word`.
+    fn word_start(&self) -> usize {
+        let s = &self.line[..self.cursor];
+        let trimmed = s.trim_end();
+        match trimmed.rfind(char::is_whitespace) {
+            Some(i) => i + 1,
+            None => 0,
+        }
+    }
+
+    fn word_end(&self) -> usize {
+        let rest = &self.line[self.cursor..];
+        let skipped = rest.len() - rest.trim_start().len();
+        match rest.trim_start().find(char::is_whitespace) {
+            Some(i) => self.cursor + skipped + i,
+            None => self.line.len(),
+        }
+    }
+
+    fn delete_back(&mut self) {
+        let b = self.prev_boundary();
+        if b != self.cursor {
+            self.line.replace_range(b..self.cursor, "");
+            self.cursor = b;
+            self.sync();
+        }
+    }
+
+    fn delete_forward(&mut self) {
+        let b = self.next_boundary();
+        if b != self.cursor {
+            self.line.replace_range(self.cursor..b, "");
+            self.sync();
+        }
+    }
+
+    fn kill_word_back(&mut self) {
+        let b = self.word_start();
+        if b != self.cursor {
+            self.line.replace_range(b..self.cursor, "");
+            self.cursor = b;
+            self.sync();
+        }
+    }
+
+    fn kill_line(&mut self) {
+        self.line.clear();
+        self.cursor = 0;
+        self.sync();
+    }
+
+    fn move_cursor(&mut self, to: usize) {
+        self.cursor = to;
+        self.sync();
     }
 }
 
@@ -436,9 +529,8 @@ struct CompleterState {
 
 impl CompleterState {
     fn new(input: &str) -> Self {
-        let (head, partial) = split_last_token(input);
         let mut st = CompleterState {
-            column: Column::new(head, partial),
+            column: Column::new(input.to_string(), input.len()),
             focus: Focus::Columns,
             frames: Vec::new(),
             message: None,
@@ -494,7 +586,7 @@ impl CompleterState {
                 // genuinely instructive error still surfaces: `commits where `
                 // with `sha` highlighted fails, and so does `commits where`,
                 // leaving the original message on screen.
-                let base = self.active().prefix.trim().to_string();
+                let base = self.active().line.trim().to_string();
                 match preview_result(&base) {
                     Ok(frames) if !base.is_empty() => {
                         self.frames = frames;
@@ -523,19 +615,21 @@ impl CompleterState {
     /// spend the width that makes the preview readable.  Extra columns are
     /// reserved for [`pivot`](Self::pivot), where the new column has a
     /// genuinely different root and the pair is worth seeing side by side.
+    /// Tab: replace the token under the cursor with the highlighted
+    /// candidate and leave a space, so Tab-after-Tab builds the pipeline.
     fn commit(&mut self) {
-        let tok = self.active().current_token();
-        if tok.is_empty() {
+        let col = self.active();
+        let Some(cand) = col.highlighted().map(|c| c.text.clone()) else {
             return;
-        }
-        let next_prefix = format!("{} ", self.active().effective());
-        self.active_mut().move_to(next_prefix);
-    }
-
-    /// Backspace on an empty query: undo the last move — a committed token,
-    /// a preview selection, or a drill onto an object, all the same way.
-    fn pop_column(&mut self) {
-        self.active_mut().back();
+        };
+        let head = col.prefix();
+        let tail = col.line[col.cursor..].to_string();
+        let cursor = head.len() + cand.len() + 1;
+        let line = format!("{head}{cand} {tail}");
+        let col = self.active_mut();
+        col.line = line;
+        col.cursor = cursor.min(col.line.len());
+        col.sync();
     }
 
     /// Ctrl-L: step into the preview to drill its frames (only if there are
@@ -655,7 +749,7 @@ impl CompleterState {
             // the query rather than standing beside it — the column it would
             // sit next to is the one it was derived from, already visible in
             // the pipeline line above.  Backspace undoes either.
-            self.active_mut().move_to(format!("{n} "));
+            self.active_mut().set_line(format!("{n} "));
         }
         self.clear_selection();
         self.focus = Focus::Columns;
@@ -677,8 +771,8 @@ impl CompleterState {
     /// Enter still takes it — `comm` + Enter is `commits`.
     fn accept(&mut self) {
         let col = self.active();
-        self.accepted = Some(if col.query.is_empty() {
-            col.prefix.trim().to_string()
+        self.accepted = Some(if col.query().is_empty() {
+            col.line.trim().to_string()
         } else {
             col.effective()
         });
@@ -748,21 +842,62 @@ impl CompleterState {
                 KeyCode::Down => self.active_mut().move_sel(1),
                 KeyCode::Char('p' | 'k') if ctrl => self.active_mut().move_sel(-1),
                 KeyCode::Char('n' | 'j') if ctrl => self.active_mut().move_sel(1),
-                KeyCode::Backspace => {
-                    if self.active().query.is_empty() {
-                        self.pop_column();
-                    } else {
-                        self.active_mut().query.pop();
-                        self.active_mut().refilter();
-                    }
+                // --- line editing, readline/emacs spellings ---------------
+                //
+                // ^W and ^K are deliberately absent: ^w is the window prefix
+                // and ^k moves the selection.  M-<backspace> takes ^W's job
+                // (kill word); ^U takes ^K's, clearing the whole line rather
+                // than to the end — there is no third free chord for the
+                // narrower version, and a pipeline is one line.
+                KeyCode::Backspace if alt => self.active_mut().kill_word_back(),
+                KeyCode::Backspace => self.active_mut().delete_back(),
+                KeyCode::Delete => self.active_mut().delete_forward(),
+                KeyCode::Char('d') if ctrl => self.active_mut().delete_forward(),
+                KeyCode::Char('u') if ctrl => self.active_mut().kill_line(),
+                KeyCode::Char('a') if ctrl => self.active_mut().move_cursor(0),
+                KeyCode::Home => self.active_mut().move_cursor(0),
+                KeyCode::Char('e') if ctrl => {
+                    let end = self.active().line.len();
+                    self.active_mut().move_cursor(end);
+                }
+                KeyCode::End => {
+                    let end = self.active().line.len();
+                    self.active_mut().move_cursor(end);
+                }
+                KeyCode::Left if ctrl => {
+                    let to = self.active().word_start();
+                    self.active_mut().move_cursor(to);
+                }
+                KeyCode::Right if ctrl => {
+                    let to = self.active().word_end();
+                    self.active_mut().move_cursor(to);
+                }
+                KeyCode::Char('b') if alt => {
+                    let to = self.active().word_start();
+                    self.active_mut().move_cursor(to);
+                }
+                KeyCode::Char('f') if alt => {
+                    let to = self.active().word_end();
+                    self.active_mut().move_cursor(to);
+                }
+                KeyCode::Left => {
+                    let to = self.active().prev_boundary();
+                    self.active_mut().move_cursor(to);
+                }
+                KeyCode::Char('b') if ctrl => {
+                    let to = self.active().prev_boundary();
+                    self.active_mut().move_cursor(to);
+                }
+                KeyCode::Right => {
+                    let to = self.active().next_boundary();
+                    self.active_mut().move_cursor(to);
+                }
+                KeyCode::Char('f') if ctrl => {
+                    let to = self.active().next_boundary();
+                    self.active_mut().move_cursor(to);
                 }
                 // `!alt` so an unbound M-<key> is ignored rather than typed
-                KeyCode::Char(c) if !ctrl && !alt => {
-                    let col = self.active_mut();
-                    col.query.push(c);
-                    col.selected = 0;
-                    col.refilter();
-                }
+                KeyCode::Char(c) if !ctrl && !alt => self.active_mut().insert(c),
                 _ => {}
             },
             Focus::Preview => match code {
@@ -906,12 +1041,9 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
     // prompt: the pipeline built so far, then the active query under a caret
     let prompt = Line::from(vec![
         Span::styled("gitq❯ ", cyan),
-        Span::raw(st.active().prefix.clone()),
-        Span::styled(
-            st.active().query.clone(),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
+        Span::raw(st.active().line[..st.active().cursor].to_string()),
         Span::styled("▮", cyan),
+        Span::raw(st.active().line[st.active().cursor..].to_string()),
     ]);
     f.render_widget(Paragraph::new(prompt), rows[0]);
 
@@ -1208,23 +1340,68 @@ mod tests {
         st.handle(KeyCode::Tab, KeyModifiers::NONE);
         // the committed token is already visible in the pipeline line, so it
         // does not also get a column of its own
-        assert_eq!(st.active().prefix, "commits where ");
+        assert_eq!(st.active().line, "commits where ");
         // and the new position offers fields, not steps
         assert!(st.active().all.iter().any(|c| c.kind == "field"));
     }
 
     #[test]
-    fn backspace_on_empty_query_steps_back_a_token() {
+    fn backspace_deletes_one_character_not_a_token() {
+        // the whole point: editing keys mean what they mean in a shell
         let mut st = CompleterState::new("commits ");
-        st.handle(KeyCode::Tab, KeyModifiers::NONE); // commit the highlighted step
-        let advanced = st.active().prefix.clone();
-        assert_ne!(advanced, "commits ");
+        st.handle(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(st.active().line, "commits in ");
         st.handle(KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(st.active().prefix, "commits ");
+        assert_eq!(st.active().line, "commits in");
+        st.handle(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(st.active().line, "commits i");
     }
 
     #[test]
-    fn backspace_unwinds_a_drill_one_move_at_a_time() {
+    fn alt_backspace_kills_a_word() {
+        let mut st = CompleterState::new("commits where author ");
+        st.handle(KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(st.active().line, "commits where ");
+        st.handle(KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(st.active().line, "commits ");
+    }
+
+    #[test]
+    fn ctrl_a_and_ctrl_e_move_to_the_ends() {
+        let mut st = CompleterState::new("commits where");
+        st.handle(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert_eq!(st.active().cursor, 0);
+        st.handle(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        assert_eq!(st.active().cursor, "commits where".len());
+    }
+
+    #[test]
+    fn editing_in_the_middle_completes_the_token_the_cursor_is_in() {
+        let mut st = CompleterState::new("commits where author");
+        // put the cursor just after `where`
+        st.handle(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        for _ in 0..13 {
+            st.handle(KeyCode::Right, KeyModifiers::NONE);
+        }
+        assert_eq!(st.active().query(), "where");
+        // typing here edits in place rather than appending
+        st.handle(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(st.active().line, "commits wher author");
+    }
+
+    #[test]
+    fn ctrl_u_clears_the_line_and_ctrl_d_deletes_forward() {
+        let mut st = CompleterState::new("commits where");
+        st.handle(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(st.active().line, "ommits where");
+        st.handle(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(st.active().line, "");
+        assert_eq!(st.active().cursor, 0);
+    }
+
+    #[test]
+    fn a_drill_replaces_the_line_and_leaves_it_editable() {
         // a drill replaces the pipeline, so the old prefix is not a prefix of
         // the new one — stepping back has to be a history pop, not string
         // surgery on the current text
@@ -1233,22 +1410,20 @@ mod tests {
         st.handle(KeyCode::Char('w'), KeyModifiers::CONTROL);
         st.handle(KeyCode::Char('l'), KeyModifiers::NONE);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(st.active().prefix, "cafef00d ");
+        assert_eq!(st.active().line, "cafef00d ");
 
-        st.handle(KeyCode::Tab, KeyModifiers::NONE); // a token on top of it
-        assert!(st.active().prefix.starts_with("cafef00d "));
-        st.handle(KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(st.active().prefix, "cafef00d ");
-        st.handle(KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(st.active().prefix, "commits ", "the drill was not undone");
+        // and the drilled line is ordinary editable text from here
+        st.handle(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(st.active().line, "");
     }
 
     #[test]
-    fn backspace_at_the_start_does_nothing_rather_than_underflowing() {
-        let mut st = CompleterState::new("commits ");
+    fn backspace_at_the_start_of_the_line_does_nothing() {
+        let mut st = CompleterState::new("");
         st.handle(KeyCode::Backspace, KeyModifiers::NONE);
         st.handle(KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(st.active().prefix, "commits ");
+        assert_eq!(st.active().line, "");
+        assert_eq!(st.active().cursor, 0);
     }
 
     #[test]
@@ -1262,7 +1437,7 @@ mod tests {
         st.handle(KeyCode::Char('k'), KeyModifiers::CONTROL);
         assert_eq!(st.active().selected, 1);
         // and they must not be typed into the query
-        assert_eq!(st.active().query, "");
+        assert_eq!(st.active().query(), "");
     }
 
     #[test]
@@ -1324,10 +1499,10 @@ mod tests {
         // an unmapped window key does nothing, as in vim
         let mut st = CompleterState::new("commits ");
         ctrl_w(&mut st, 'z');
-        assert_eq!(st.active().query, "");
+        assert_eq!(st.active().query(), "");
         assert_eq!(st.focus, Focus::Columns);
         ctrl_w(&mut st, 'h');
-        assert_eq!(st.active().query, "", "a window key was typed");
+        assert_eq!(st.active().query(), "", "a window key was typed");
     }
 
     #[test]
@@ -1357,7 +1532,7 @@ mod tests {
         assert_eq!(st.focus, Focus::Preview);
         st.handle(KeyCode::Enter, KeyModifiers::NONE); // pivot on the frame
         assert_eq!(st.focus, Focus::Columns);
-        assert_eq!(st.active().prefix, "cafef00d ");
+        assert_eq!(st.active().line, "cafef00d ");
     }
 
     #[test]
@@ -1528,7 +1703,7 @@ mod tests {
         down(&mut st, 2);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.focus, Focus::Columns);
-        assert_eq!(st.active().prefix, "commits [0..3] ");
+        assert_eq!(st.active().line, "commits [0..3] ");
         // the shape is unchanged, so the same candidates still apply
         assert!(st.active().all.iter().any(|c| c.kind == "step"));
         // and the selection does not linger
@@ -1536,14 +1711,15 @@ mod tests {
     }
 
     #[test]
-    fn backspace_undoes_a_selection_that_narrowed_in_place() {
+    fn a_selection_leaves_an_editable_line() {
         let mut st = previewing(8);
         st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
         down(&mut st, 2);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(st.active().prefix, "commits [0..3] ");
-        st.handle(KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(st.active().prefix, "commits ");
+        assert_eq!(st.active().line, "commits [0..3] ");
+        // the emitted step is text like any other — kill the word to drop it
+        st.handle(KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(st.active().line, "commits ");
     }
 
     #[test]
@@ -1551,7 +1727,7 @@ mod tests {
         // the single-object drill must not regress into a slice
         let mut st = previewing(3);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(st.active().prefix, "sha0 ");
+        assert_eq!(st.active().line, "sha0 ");
     }
 
     #[test]
@@ -1595,11 +1771,11 @@ mod tests {
     #[test]
     fn m_x_opens_the_palette_without_typing_into_the_column() {
         let mut st = CompleterState::new("commits ");
-        let before = st.active().query.clone();
+        let before = st.active().query();
         let (c, m) = alt('x');
         st.handle(c, m);
         assert_eq!(st.focus, Focus::Palette);
-        assert_eq!(st.active().query, before, "M-x leaked a character");
+        assert_eq!(st.active().query(), before, "M-x leaked a character");
         assert!(!st.palette_rows().is_empty());
     }
 
@@ -1625,7 +1801,7 @@ mod tests {
         }
         assert_eq!(st.palette_query, "scroll");
         assert_eq!(
-            st.active().query,
+            st.active().query(),
             "",
             "palette input leaked into the column"
         );
@@ -1692,7 +1868,7 @@ mod tests {
         let mut st = CompleterState::new("commits ");
         let (c, m) = alt('j');
         st.handle(c, m);
-        assert_eq!(st.active().query, "");
+        assert_eq!(st.active().query(), "");
         assert_eq!(st.focus, Focus::Columns);
     }
 
@@ -1700,10 +1876,10 @@ mod tests {
     fn the_palette_does_not_disturb_the_column_behind_it() {
         let mut st = CompleterState::new("commits ");
         st.handle(KeyCode::Tab, KeyModifiers::NONE);
-        let prefix = st.active().prefix.clone();
+        let prefix = st.active().line.clone();
         let (c, m) = alt('x');
         st.handle(c, m);
         st.handle(KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(st.active().prefix, prefix);
+        assert_eq!(st.active().line, prefix);
     }
 }
