@@ -298,9 +298,26 @@ impl Column {
 
     // --- editing ---------------------------------------------------------
 
+    /// Insert a character, closing a quote for you as an editor would.
+    ///
+    /// Only `"` — gitq's own quote.  `'` is rejected by the tokenizer
+    /// outright, so auto-closing it would hand the user a pair of characters
+    /// that cannot parse; `/` opens a regex but also starts every terminal
+    /// (`/show`), and closing that would break far more than it helped.
     fn insert(&mut self, c: char) {
+        // typing the closing quote when it is already there steps over it,
+        // so the pair does not double up
+        if c == '"' && self.line[self.cursor..].starts_with('"') {
+            self.cursor += 1;
+            self.sync();
+            return;
+        }
         self.line.insert(self.cursor, c);
         self.cursor += c.len_utf8();
+        if c == '"' {
+            // the closing quote goes after the cursor, which stays between
+            self.line.insert(self.cursor, '"');
+        }
         self.sync();
     }
 
@@ -353,6 +370,15 @@ impl Column {
     }
 
     fn delete_back(&mut self) {
+        // backspacing between an empty pair takes both, so an auto-inserted
+        // quote does not have to be deleted twice
+        if self.line[..self.cursor].ends_with('"') && self.line[self.cursor..].starts_with('"') {
+            let b = self.cursor - 1;
+            self.line.replace_range(b..self.cursor + 1, "");
+            self.cursor = b;
+            self.sync();
+            return;
+        }
         let b = self.prev_boundary();
         if b != self.cursor {
             self.line.replace_range(b..self.cursor, "");
@@ -1320,6 +1346,59 @@ mod tests {
         assert_eq!(st.active().line, "commits via");
         st.handle(KeyCode::Backspace, KeyModifiers::NONE);
         assert_eq!(st.active().line, "commits vi");
+    }
+
+    #[test]
+    fn a_double_quote_closes_itself_with_the_cursor_between() {
+        let mut st = CompleterState::new("hunks grep ");
+        st.handle(KeyCode::Char('"'), KeyModifiers::NONE);
+        assert_eq!(st.active().line, r#"hunks grep """#);
+        assert_eq!(
+            st.active().cursor,
+            "hunks grep \"".len(),
+            "cursor not inside"
+        );
+        // typing continues between the pair
+        for c in "pop".chars() {
+            st.handle(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(st.active().line, r#"hunks grep "pop""#);
+    }
+
+    #[test]
+    fn typing_the_closing_quote_steps_over_it_rather_than_doubling() {
+        let mut st = CompleterState::new("hunks grep ");
+        st.handle(KeyCode::Char('"'), KeyModifiers::NONE);
+        for c in "pop".chars() {
+            st.handle(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        st.handle(KeyCode::Char('"'), KeyModifiers::NONE);
+        assert_eq!(st.active().line, r#"hunks grep "pop""#);
+        assert_eq!(
+            st.active().cursor,
+            st.active().line.len(),
+            "did not step over"
+        );
+    }
+
+    #[test]
+    fn backspace_between_an_empty_pair_takes_both() {
+        let mut st = CompleterState::new("hunks grep ");
+        st.handle(KeyCode::Char('"'), KeyModifiers::NONE);
+        st.handle(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(st.active().line, "hunks grep ");
+    }
+
+    #[test]
+    fn only_the_double_quote_auto_closes() {
+        // `'` cannot parse in gitq and `/` starts every terminal, so closing
+        // either would produce something the language rejects
+        let mut st = CompleterState::new("hunks grep ");
+        st.handle(KeyCode::Char('\''), KeyModifiers::NONE);
+        assert_eq!(st.active().line, "hunks grep '");
+        let mut st = CompleterState::new("commits ");
+        st.handle(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert_eq!(st.active().line, "commits /");
     }
 
     #[test]
