@@ -261,11 +261,12 @@ struct Column {
     /// Committed pipeline up to (not including) this column; trailing space
     /// when non-empty.
     prefix: String,
-    /// The prefix this column was opened at — its floor.  Committing tokens
-    /// grows `prefix` past it; Backspace may shrink back to it but never
-    /// through it, because everything below belongs to the column that
-    /// pivoted here.
-    root: String,
+    /// Prefixes this column has been at, oldest first.  Backspace on an empty
+    /// query pops one.  A stack rather than string-surgery on `prefix`,
+    /// because a move is not always an extension: drilling onto an object
+    /// *replaces* the pipeline, and the old prefix is not a prefix of the new
+    /// one to trim back to.
+    history: Vec<String>,
     query: String,
     all: Vec<Cand>,
     filtered: Vec<usize>,
@@ -275,7 +276,7 @@ struct Column {
 impl Column {
     fn new(prefix: String, query: String) -> Self {
         let mut c = Column {
-            root: prefix.clone(),
+            history: Vec::new(),
             prefix,
             query,
             all: Vec::new(),
@@ -287,9 +288,24 @@ impl Column {
         c
     }
 
-    /// Move this column to a new prefix, keeping its floor.  Used when a
-    /// token is committed or stepped back *within* one column.
+    /// Move this column to a new prefix, remembering where it was.
     fn move_to(&mut self, prefix: String) {
+        self.history.push(std::mem::take(&mut self.prefix));
+        self.set_prefix(prefix);
+    }
+
+    /// Step back to the previous prefix, if there is one.
+    fn back(&mut self) -> bool {
+        match self.history.pop() {
+            Some(p) => {
+                self.set_prefix(p);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn set_prefix(&mut self, prefix: String) {
         self.prefix = prefix;
         self.query.clear();
         self.selected = 0;
@@ -506,18 +522,10 @@ impl CompleterState {
         self.active_mut().move_to(next_prefix);
     }
 
-    /// Backspace on an empty query: step back a token within the active
-    /// column, or — once at its floor — drop back to the column that pivoted
-    /// here.
+    /// Backspace on an empty query: undo the last move — a committed token,
+    /// a preview selection, or a drill onto an object, all the same way.
     fn pop_column(&mut self) {
-        let col = self.active();
-        if col.prefix.len() > col.root.len() {
-            let (head, _) = split_last_token(col.prefix.trim_end());
-            let root = col.root.clone();
-            // never step below this column's own root
-            let head = if head.len() < root.len() { root } else { head };
-            self.active_mut().move_to(head);
-        } else if self.columns.len() > 1 {
+        if !self.active_mut().back() && self.columns.len() > 1 {
             self.columns.pop();
         }
     }
@@ -633,19 +641,13 @@ impl CompleterState {
                 .and_then(|f| frame_anchor(f, &base))
         };
         if let Some(n) = next {
-            if explicit {
-                // A selection only narrows the query it came from: same frame
-                // shape, so the same candidates apply and a new column would
-                // just restate the one behind it.  It is the `[...]` step
-                // typed for you, so it belongs where typing would have put it.
-                self.active_mut().move_to(format!("{n} "));
-            } else {
-                // A single-object drill re-roots on that object, which is a
-                // different query and worth seeing beside the one it came
-                // from.
-                self.columns
-                    .push(Column::new(format!("{n} "), String::new()));
-            }
+            // Both a selection and a single-object drill move the column
+            // that produced them.  Neither warrants a new one: a selection
+            // does not change the frame shape at all, and a drill replaces
+            // the query rather than standing beside it — the column it would
+            // sit next to is the one it was derived from, already visible in
+            // the pipeline line above.  Backspace undoes either.
+            self.active_mut().move_to(format!("{n} "));
         }
         self.clear_selection();
         self.focus = Focus::Columns;
@@ -1196,20 +1198,31 @@ mod tests {
     }
 
     #[test]
-    fn backspace_never_steps_below_a_pivoted_columns_root() {
+    fn backspace_unwinds_a_drill_one_move_at_a_time() {
+        // a drill replaces the pipeline, so the old prefix is not a prefix of
+        // the new one — stepping back has to be a history pop, not string
+        // surgery on the current text
         let mut st = CompleterState::new("commits ");
         st.frames = vec![commit_frame("cafef00d")];
         st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
-        st.handle(KeyCode::Enter, KeyModifiers::NONE); // pivot -> second column
-        assert_eq!(st.columns.len(), 2);
-        let root = st.active().root.clone();
-        st.handle(KeyCode::Tab, KeyModifiers::NONE); // grow past the root
-        assert!(st.active().prefix.len() > root.len());
-        st.handle(KeyCode::Backspace, KeyModifiers::NONE); // back to the root
-        assert_eq!(st.active().prefix, root);
-        assert_eq!(st.columns.len(), 2, "stepped back too far, popped early");
-        st.handle(KeyCode::Backspace, KeyModifiers::NONE); // now drop the column
-        assert_eq!(st.columns.len(), 1);
+        st.handle(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(st.active().prefix, "cafef00d ");
+        assert_eq!(st.columns.len(), 1, "a drill opened a column");
+
+        st.handle(KeyCode::Tab, KeyModifiers::NONE); // a token on top of it
+        assert!(st.active().prefix.starts_with("cafef00d "));
+        st.handle(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(st.active().prefix, "cafef00d ");
+        st.handle(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(st.active().prefix, "commits ", "the drill was not undone");
+    }
+
+    #[test]
+    fn backspace_at_the_start_does_nothing_rather_than_underflowing() {
+        let mut st = CompleterState::new("commits ");
+        st.handle(KeyCode::Backspace, KeyModifiers::NONE);
+        st.handle(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(st.active().prefix, "commits ");
     }
 
     #[test]
@@ -1481,8 +1494,10 @@ mod tests {
     fn pivoting_with_no_selection_still_re_roots_on_the_object() {
         // the single-object drill must not regress into a slice
         let mut st = previewing(3);
+        let cols = st.columns.len();
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.active().prefix, "sha0 ");
+        assert_eq!(st.columns.len(), cols, "a drill opened a column");
     }
 
     #[test]
