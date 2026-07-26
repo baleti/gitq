@@ -190,6 +190,7 @@ gitq-complete-tui-widget() {
   # widget cannot read its stdout directly.  `-E` closes the popup when gitq
   # exits and propagates its exit status.
   local result ret tmp err
+  local gitq_bin=${commands[gitq]}
   if [[ -n $TMUX ]] && (( $+commands[tmux] )); then
     if ! tmp=$(mktemp "${TMPDIR:-/tmp}/gitq-tui.XXXXXX"); then
       zle -M "gitq: could not create a temp file"
@@ -209,8 +210,13 @@ gitq-complete-tui-widget() {
     # two rows and two columns, so the completer would be smaller than the
     # terminal it is meant to fill.  Measured: 133x55 bordered vs 135x57
     # borderless on a 135x57 client.
+    # An ABSOLUTE path, not `gitq`: display-popup runs its command with the
+    # tmux *server's* environment, not this shell's, and a non-interactive
+    # `zsh -c` never sources ~/.zshrc — so a gitq installed to ~/.local/bin
+    # (added to PATH there) is simply not found, and the popup dies with 127
+    # before drawing anything.
     err=$(tmux display-popup -B -E -w "${GITQ_POPUP_WIDTH:-100%}" -h "${GITQ_POPUP_HEIGHT:-100%}" \
-      "gitq --complete-tui ${(q)pipeline} > ${(q)tmp} 2> ${(q)errfile}" 2>&1 >/dev/null)
+      "${(q)gitq_bin} --complete-tui ${(q)pipeline} > ${(q)tmp} 2> ${(q)errfile}" 2>&1 >/dev/null)
     ret=$?
     result=$(<$tmp)
     local gitq_err=; [[ -r $errfile ]] && gitq_err=$(<$errfile)
@@ -261,7 +267,9 @@ gitq-scrollback-browse-widget() {
   # Overlay the browser with tmux's own popup (tmux >= 3.2) so it behaves
   # like a real UI layer instead of trashing the current line's redraw.
   zle -I
-  tmux display-popup -E -w 90% -h 90% "gitq --scrollback-browse"
+  # absolute path for the same reason as the completer: a popup does not get
+  # this shell's PATH
+  tmux display-popup -E -w 90% -h 90% "${(q)commands[gitq]} --scrollback-browse"
   zle reset-prompt
 }
 zle -N gitq-scrollback-browse-widget
