@@ -23,6 +23,7 @@
 //! scoring, the anchor grammar, and the column/preview state machine — is
 //! pure and unit-tested, because the live TUI can't be driven from a test.
 
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io;
 
@@ -386,11 +387,22 @@ struct CompleterState {
     frames: Vec<Frame>,
     message: Option<String>,
     frames_key: String,
+    /// The pipeline the displayed frames were actually produced by.  Not the
+    /// same as `frames_key` once the preview falls back past an unrunnable
+    /// candidate — and it is this, not the key, that a pivot must build on,
+    /// or the rows would be re-selected out of a different result set.
+    frames_from: String,
     /// Selection within the preview when `Focus::Preview`.
     preview_sel: usize,
     /// Filter text and selection for the `M-x` palette.
     palette_query: String,
     palette_sel: usize,
+    /// Anchor of the visual-mode range; `Some` while `v` is active.  The
+    /// live range is anchor..=preview_sel, in either direction.
+    visual_from: Option<usize>,
+    /// Rows put aside with `m`.  They survive leaving visual mode, so
+    /// several disjoint runs can be gathered before acting on them.
+    marked: BTreeSet<usize>,
     accepted: Option<String>,
     /// Set when a palette command is chosen; run after the TUI exits.
     command: Option<PaletteCommand>,
@@ -406,9 +418,12 @@ impl CompleterState {
             frames: Vec::new(),
             message: None,
             frames_key: String::new(),
+            frames_from: String::new(),
             preview_sel: 0,
             palette_query: String::new(),
             palette_sel: 0,
+            visual_from: None,
+            marked: BTreeSet::new(),
             accepted: None,
             command: None,
             quit: false,
@@ -440,6 +455,7 @@ impl CompleterState {
             Ok(frames) => {
                 self.frames = frames;
                 self.message = None;
+                self.frames_from = key.clone();
             }
             Err(msg) => {
                 // The highlighted candidate does not form a runnable pipeline
@@ -457,6 +473,7 @@ impl CompleterState {
                     Ok(frames) if !base.is_empty() => {
                         self.frames = frames;
                         self.message = None;
+                        self.frames_from = base;
                     }
                     _ => {
                         self.frames = Vec::new();
@@ -467,6 +484,9 @@ impl CompleterState {
         }
         self.frames_key = key;
         self.preview_sel = 0;
+        // row numbers refer to the old result set; keeping them would act on
+        // whatever now happens to sit at those positions
+        self.clear_selection();
     }
 
     /// Tab: commit the highlighted candidate and advance *this* column.
@@ -512,14 +532,111 @@ impl CompleterState {
     }
 
     /// Pivot on the selected frame: open a fresh column anchored on it.
-    fn pivot(&mut self) {
-        let base = self.effective();
-        if let Some(frame) = self.frames.get(self.preview_sel) {
-            if let Some(anchor) = frame_anchor(frame, &base) {
-                self.columns
-                    .push(Column::new(format!("{anchor} "), String::new()));
+    /// The live visual range, if visual mode is active.
+    fn visual_range(&self) -> Option<(usize, usize)> {
+        self.visual_from
+            .map(|a| (a.min(self.preview_sel), a.max(self.preview_sel)))
+    }
+
+    /// Every row currently selected: what `m` has put aside, plus the live
+    /// visual range, falling back to the row under the cursor so a plain
+    /// pivot still works with no selection at all.
+    fn selected_rows(&self) -> Vec<usize> {
+        let mut rows = self.marked.clone();
+        if let Some((lo, hi)) = self.visual_range() {
+            rows.extend(lo..=hi);
+        }
+        if rows.is_empty() {
+            rows.insert(self.preview_sel);
+        }
+        rows.into_iter()
+            .filter(|&i| i < self.frames.len())
+            .collect()
+    }
+
+    /// `v`: start a visual range here, or cancel the one in progress.
+    fn toggle_visual(&mut self) {
+        self.visual_from = match self.visual_from {
+            Some(_) => None,
+            None => Some(self.preview_sel),
+        };
+    }
+
+    /// `m`: put the current range aside and leave visual mode, so another
+    /// run can be gathered.  With no range, marks (or unmarks) the row under
+    /// the cursor, which is how single rows accumulate.
+    fn mark_selection(&mut self) {
+        match self.visual_range() {
+            Some((lo, hi)) => {
+                self.marked.extend(lo..=hi);
+                self.visual_from = None;
+            }
+            None => {
+                if !self.marked.remove(&self.preview_sel) {
+                    self.marked.insert(self.preview_sel);
+                }
             }
         }
+    }
+
+    /// Contiguous runs of the selected rows, as a gitq selection step —
+    /// `[1:3,5:7]`.  Emitting the query rather than carrying hidden state is
+    /// the point: what you selected stays readable, editable and re-runnable.
+    fn selection_step(&self) -> Option<String> {
+        let rows = self.selected_rows();
+        if rows.is_empty() {
+            return None;
+        }
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for r in rows {
+            match runs.last_mut() {
+                Some((_, end)) if *end + 1 == r => *end = r,
+                _ => runs.push((r, r)),
+            }
+        }
+        let parts: Vec<String> = runs
+            .iter()
+            .map(|(a, b)| {
+                if a == b {
+                    a.to_string()
+                } else {
+                    format!("{a}:{}", b + 1) // half-open, as the language reads it
+                }
+            })
+            .collect();
+        Some(format!("[{}]", parts.join(",")))
+    }
+
+    fn clear_selection(&mut self) {
+        self.visual_from = None;
+        self.marked.clear();
+    }
+
+    /// Pivot on the selection, or on the row under the cursor.
+    ///
+    /// The two cases differ on purpose.  A bare cursor re-roots on the object
+    /// itself (a commit becomes its own source), which is the drill that
+    /// makes single-object exploration work.  An *explicit* selection instead
+    /// appends a positional step to the pipeline you are already in, because
+    /// several rows have no single identity to re-root on — and because
+    /// `commits ... [1:3,5:7]` is a query you can read and edit afterwards.
+    fn pivot(&mut self) {
+        // what produced the rows on screen, which is not always `effective()`
+        let base = self.frames_from.clone();
+        let explicit = self.visual_from.is_some() || !self.marked.is_empty();
+        let next = if explicit && !base.trim().is_empty() {
+            self.selection_step()
+                .map(|sel| format!("{} {sel}", base.trim()))
+        } else {
+            self.frames
+                .get(self.preview_sel)
+                .and_then(|f| frame_anchor(f, &base))
+        };
+        if let Some(n) = next {
+            self.columns
+                .push(Column::new(format!("{n} "), String::new()));
+        }
+        self.clear_selection();
         self.focus = Focus::Columns;
     }
 
@@ -578,7 +695,20 @@ impl CompleterState {
                 _ => {}
             },
             Focus::Preview => match code {
-                KeyCode::Esc => self.focus = Focus::Columns,
+                KeyCode::Char('v') => self.toggle_visual(),
+                KeyCode::Char('m') => self.mark_selection(),
+                // Esc peels one layer at a time: the range, then the marks,
+                // then the preview itself — so it never discards more than
+                // the user was looking at.
+                KeyCode::Esc => {
+                    if self.visual_from.is_some() {
+                        self.visual_from = None;
+                    } else if !self.marked.is_empty() {
+                        self.marked.clear();
+                    } else {
+                        self.focus = Focus::Columns;
+                    }
+                }
                 KeyCode::Enter | KeyCode::Tab => self.pivot(),
                 KeyCode::Char('l') if ctrl => self.pivot(),
                 // Nothing is typed here, so movement takes the vi and the
@@ -762,10 +892,33 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
     // preview cell: an interactive frame list when focused, else text
     let pv = cells[shown.len()];
     if st.focus == Focus::Preview {
+        let vis = st.visual_range();
         let items: Vec<ListItem> = st
             .frames
             .iter()
-            .map(|fr| ListItem::new(Line::from(render_frame_line(fr))))
+            .enumerate()
+            .map(|(i, fr)| {
+                // a gutter, so a selected row reads as selected even when the
+                // cursor has moved off it
+                let in_visual = vis.is_some_and(|(lo, hi)| i >= lo && i <= hi);
+                let (glyph, style) = if st.marked.contains(&i) {
+                    ("*", Style::default().fg(Color::Yellow))
+                } else if in_visual {
+                    ("│", Style::default().fg(Color::Cyan))
+                } else {
+                    (" ", dim)
+                };
+                let line = Line::from(vec![
+                    Span::styled(glyph, style),
+                    Span::raw(" "),
+                    Span::raw(render_frame_line(fr)),
+                ]);
+                ListItem::new(if in_visual {
+                    line.style(Style::default().bg(Color::Rgb(40, 50, 60)))
+                } else {
+                    line
+                })
+            })
             .collect();
         let mut ls = ListState::default();
         ls.select(Some(st.preview_sel));
@@ -809,10 +962,25 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                 "Tab next  ^j/^k move  ^L preview  M-x cmds  ↵ accept",
             )
         }
-        Focus::Preview => (
-            format!("preview {}/{}", st.preview_sel + 1, st.frames.len()),
-            "^j/^k move  ^L/↵ pivot  Esc back",
-        ),
+        Focus::Preview => {
+            let n = st.selected_rows().len();
+            let sel = match (st.visual_from.is_some(), st.marked.len()) {
+                (false, 0) => String::new(),
+                _ => format!(
+                    "  {} selected {}",
+                    n,
+                    st.selection_step().unwrap_or_default()
+                ),
+            };
+            (
+                format!("preview {}/{}{sel}", st.preview_sel + 1, st.frames.len()),
+                if st.visual_from.is_some() {
+                    "^j/^k extend  m mark range  v cancel  ↵ act on selection"
+                } else {
+                    "^j/^k move  v visual  m mark  ↵ pivot  Esc back"
+                },
+            )
+        }
         Focus::Palette => {
             let n = st.palette_rows().len();
             (
@@ -1084,6 +1252,158 @@ mod tests {
         st.frames.clear();
         st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
         assert_eq!(st.focus, Focus::Columns);
+    }
+
+    // --- visual selection in the preview ----------------------------------
+
+    fn previewing(n: usize) -> CompleterState {
+        let mut st = CompleterState::new("commits ");
+        st.frames = (0..n).map(|i| commit_frame(&format!("sha{i}"))).collect();
+        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(st.focus, Focus::Preview);
+        st
+    }
+
+    fn down(st: &mut CompleterState, n: usize) {
+        for _ in 0..n {
+            st.handle(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        }
+    }
+
+    #[test]
+    fn v_starts_a_range_that_movement_extends() {
+        let mut st = previewing(6);
+        st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
+        down(&mut st, 2);
+        assert_eq!(st.visual_range(), Some((0, 2)));
+        assert_eq!(st.selected_rows(), vec![0, 1, 2]);
+        assert_eq!(st.selection_step().as_deref(), Some("[0:3]"));
+    }
+
+    #[test]
+    fn a_range_extends_upwards_too() {
+        let mut st = previewing(6);
+        down(&mut st, 4);
+        st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
+        st.handle(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        st.handle(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(st.visual_range(), Some((2, 4)));
+        assert_eq!(st.selection_step().as_deref(), Some("[2:5]"));
+    }
+
+    #[test]
+    fn m_banks_the_range_and_leaves_visual_so_another_can_be_made() {
+        let mut st = previewing(10);
+        st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
+        down(&mut st, 1);
+        st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+        assert!(st.visual_from.is_none(), "still in visual mode after m");
+        assert_eq!(st.marked.len(), 2);
+
+        // a second, disjoint run
+        down(&mut st, 4);
+        st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
+        down(&mut st, 1);
+        st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+        assert_eq!(st.selection_step().as_deref(), Some("[0:2,5:7]"));
+    }
+
+    #[test]
+    fn contiguous_marks_collapse_into_one_range_and_singles_stay_bare() {
+        let mut st = previewing(10);
+        for r in [0usize, 1, 2, 5, 8] {
+            st.preview_sel = r;
+            st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+        }
+        assert_eq!(st.selection_step().as_deref(), Some("[0:3,5,8]"));
+    }
+
+    #[test]
+    fn m_on_an_already_marked_row_unmarks_it() {
+        let mut st = previewing(4);
+        st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+        assert_eq!(st.marked.len(), 1);
+        st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+        assert!(st.marked.is_empty());
+    }
+
+    #[test]
+    fn v_again_cancels_the_range_without_marking_it() {
+        let mut st = previewing(5);
+        st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
+        down(&mut st, 2);
+        st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
+        assert!(st.visual_from.is_none());
+        assert!(st.marked.is_empty());
+    }
+
+    #[test]
+    fn escape_peels_the_range_then_the_marks_then_the_preview() {
+        let mut st = previewing(6);
+        st.handle(KeyCode::Char('m'), KeyModifiers::NONE); // a mark
+        down(&mut st, 2);
+        st.handle(KeyCode::Char('v'), KeyModifiers::NONE); // and a range
+        st.handle(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(st.visual_from.is_none());
+        assert_eq!(st.marked.len(), 1, "Esc took the marks too");
+        assert_eq!(st.focus, Focus::Preview);
+        st.handle(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(st.marked.is_empty());
+        assert_eq!(st.focus, Focus::Preview, "Esc left the preview too early");
+        st.handle(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(st.focus, Focus::Columns);
+    }
+
+    #[test]
+    fn pivoting_a_selection_appends_a_positional_step() {
+        let mut st = previewing(8);
+        st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
+        down(&mut st, 2);
+        st.handle(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(st.focus, Focus::Columns);
+        assert_eq!(st.active().prefix, "commits [0:3] ");
+        // and the selection does not linger into the new column
+        assert!(st.marked.is_empty() && st.visual_from.is_none());
+    }
+
+    #[test]
+    fn pivoting_with_no_selection_still_re_roots_on_the_object() {
+        // the single-object drill must not regress into a slice
+        let mut st = previewing(3);
+        st.handle(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(st.active().prefix, "sha0 ");
+    }
+
+    #[test]
+    fn the_emitted_step_is_a_pipeline_the_language_actually_parses() {
+        let mut st = previewing(10);
+        for r in [1usize, 2, 6] {
+            st.preview_sel = r;
+            st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+        }
+        let step = st.selection_step().unwrap();
+        assert_eq!(step, "[1:3,6]");
+        let p = crate::parse::parse_pipeline(&format!("commits {step}"))
+            .expect("the TUI emitted something the parser rejects");
+        // and it picks exactly the rows that were marked
+        let sels = match &p.steps[0] {
+            crate::ast::Step::Slice(s) => s.clone(),
+            other => panic!("expected a slice step, got {other:?}"),
+        };
+        assert_eq!(crate::slice::positions(&sels, 10).unwrap(), vec![1, 2, 6]);
+    }
+
+    #[test]
+    fn a_stale_selection_is_dropped_when_the_result_set_changes() {
+        // row numbers refer to the old frames; acting on them afterwards
+        // would hit whatever now sits at those positions
+        let mut st = previewing(5);
+        st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
+        assert!(!st.marked.is_empty());
+        st.focus = Focus::Columns;
+        st.frames_key = "stale".into();
+        st.refresh_preview();
+        assert!(st.marked.is_empty(), "stale rows survived a preview change");
     }
 
     // --- M-x palette ------------------------------------------------------
