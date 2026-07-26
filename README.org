@@ -308,9 +308,8 @@ the pipeline the highlighted candidate would produce on the right:
   =5 hunks · 2 files · 3 commits · +209 -10=, or authors and a date span
   for commits — because a count alone does not distinguish 853 hunks across
   4 files from 853 across 200.
-- =^L= steps into the preview and =^H= back (=^w l= / =^w h= / =^w w= also
-  work, as in vim's window commands): the result frames become a selectable
-  list,
+- =^w= toggles between the two panes — one key, both directions: the result
+  frames become a selectable list,
   and =↵= *pivots* onto the highlighted one — a fresh column
   narrows the query to it positionally (=hunks [0..5] [1]=), one row or
   many alike, so you drill from a query's results into a query over just

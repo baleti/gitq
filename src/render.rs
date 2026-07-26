@@ -97,7 +97,10 @@ pub fn render_frame_line(f: &Frame) -> String {
             ));
             if let (Some(Value::Str(a)), Some(Value::Str(d))) = (f.field("author"), f.field("date"))
             {
-                out.push_str(&format!("  {}  {}", a, take_chars(10, &d)));
+                // 16 chars: `2026-07-21 14:05`.  Hunks from one day are
+                // routine, so the day alone cannot tell them apart or order
+                // them; seconds would add a column and settle nothing.
+                out.push_str(&format!("  {}  {}", a, take_chars(16, &d)));
             }
             if let Some(Value::Str(c)) = f.field("content") {
                 if !c.is_empty() {
