@@ -686,8 +686,6 @@ struct CompleterState {
     /// Compiled from the pipeline's own `grep`, so the preview highlights
     /// what the query searched for rather than a second, separate search box.
     highlight: Vec<regex::Regex>,
-    /// A `^w` was pressed and the next key is a window command.
-    pending_window: bool,
     /// Filter text and selection for the `M-x` palette.
     palette_query: String,
     palette_sel: usize,
@@ -718,7 +716,6 @@ impl CompleterState {
             frames_from: String::new(),
             preview_sel: 0,
             highlight: Vec::new(),
-            pending_window: false,
             palette_query: String::new(),
             palette_sel: 0,
             preview_scroll: 0,
@@ -999,50 +996,25 @@ impl CompleterState {
         self.palette_sel = 0;
     }
 
-    /// The key after a `^w`: vim's window commands over the two panes this UI
-    /// has.  `w` goes to the *other* one, which with two panes is both
-    /// "next" and "last".
-    fn handle_window_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('h') => self.focus = Focus::Columns,
-            KeyCode::Char('l') => self.enter_preview(),
-            KeyCode::Char('w') => match self.focus {
-                Focus::Columns => self.enter_preview(),
-                _ => self.focus = Focus::Columns,
-            },
-            // an unmapped window key does nothing, as in vim, rather than
-            // falling through to be typed into the query
-            _ => {}
-        }
-    }
-
     fn handle(&mut self, code: KeyCode, mods: KeyModifiers) {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         let alt = mods.contains(KeyModifiers::ALT);
 
-        // `^w h` / `^w l` / `^w w`, handled before the per-focus tables so the
-        // prefix works identically from either pane.  Not while the palette is
-        // open: it owns the keyboard, and `w` is a character there.
-        if !matches!(self.focus, Focus::Palette) {
-            if std::mem::take(&mut self.pending_window) {
-                self.handle_window_key(code);
-                return;
+        // `^w` toggles between the two panes.  Handled before the per-focus
+        // tables so one key does both directions; not while the palette is
+        // open, which owns the keyboard.
+        if ctrl && code == KeyCode::Char('w') && !matches!(self.focus, Focus::Palette) {
+            match self.focus {
+                Focus::Columns => self.enter_preview(),
+                _ => self.focus = Focus::Columns,
             }
-            if ctrl && code == KeyCode::Char('w') {
-                self.pending_window = true;
-                return;
-            }
+            return;
         }
 
         match self.focus {
             Focus::Columns => match code {
                 // M-x, as in Emacs
                 KeyCode::Char('x') if alt => self.open_palette(),
-                // ^L to the preview, ^H back from it — the vim direction
-                // keys without the ^w prefix, which still works too.  Both
-                // are consumed here, so neither reaches the shell that
-                // spawned the completer.
-                KeyCode::Char('l') if ctrl => self.enter_preview(),
                 KeyCode::Esc => self.quit = true,
                 KeyCode::Char('c' | 'g') if ctrl => self.quit = true,
                 KeyCode::Enter => self.accept(),
@@ -1110,7 +1082,6 @@ impl CompleterState {
                 _ => {}
             },
             Focus::Preview => match code {
-                KeyCode::Char('h') if ctrl => self.focus = Focus::Columns,
                 KeyCode::Char('v') => self.toggle_visual(),
                 // space, not `m`: nothing else in this pane wants it, and
                 // "tick this one" is what a spacebar means in every list UI
@@ -1475,7 +1446,7 @@ fn draw(f: &mut ratatui::Frame, st: &mut CompleterState) {
                     n,
                     desc
                 ),
-                "Tab next  ^j/^k move  ^L preview  M-x cmds  ↵ accept",
+                "Tab next  ^j/^k move  ^w preview  M-x cmds  ↵ accept",
             )
         }
         Focus::Preview => {
@@ -1493,7 +1464,7 @@ fn draw(f: &mut ratatui::Frame, st: &mut CompleterState) {
                 if st.visual_from.is_some() {
                     "^j/^k extend  space mark range  v cancel  ↵ act on selection"
                 } else {
-                    "^j/^k move  v visual  space mark  ↵ pivot  ^H back"
+                    "^j/^k move  v visual  space mark  ↵ pivot  ^w back"
                 },
             )
         }
@@ -1786,71 +1757,46 @@ mod tests {
         assert_eq!(st.palette_query, "", "^j/^k leaked into the filter");
     }
 
-    fn ctrl_w(st: &mut CompleterState, k: char) {
+    fn ctrl_w(st: &mut CompleterState) {
         st.handle(KeyCode::Char('w'), KeyModifiers::CONTROL);
-        st.handle(KeyCode::Char(k), KeyModifiers::NONE);
     }
 
     #[test]
-    fn ctrl_w_h_and_l_move_focus_like_vim_windows() {
+    fn ctrl_w_toggles_between_the_two_panes() {
         let mut st = CompleterState::new("commits ");
         st.frames = vec![commit_frame("aaaa")];
-        ctrl_w(&mut st, 'l');
+        ctrl_w(&mut st);
         assert_eq!(st.focus, Focus::Preview);
-        ctrl_w(&mut st, 'h');
+        ctrl_w(&mut st);
         assert_eq!(st.focus, Focus::Columns);
     }
 
     #[test]
-    fn ctrl_w_w_goes_to_the_other_pane_from_either_side() {
+    fn ctrl_w_is_not_typed_into_the_query() {
         let mut st = CompleterState::new("commits ");
         st.frames = vec![commit_frame("aaaa")];
-        ctrl_w(&mut st, 'w');
-        assert_eq!(st.focus, Focus::Preview);
-        ctrl_w(&mut st, 'w');
-        assert_eq!(st.focus, Focus::Columns);
-    }
-
-    #[test]
-    fn the_key_after_ctrl_w_is_never_typed_into_the_query() {
-        // an unmapped window key does nothing, as in vim
-        let mut st = CompleterState::new("commits ");
-        ctrl_w(&mut st, 'z');
+        ctrl_w(&mut st);
+        ctrl_w(&mut st);
         assert_eq!(st.active().query(), "");
-        assert_eq!(st.focus, Focus::Columns);
-        ctrl_w(&mut st, 'h');
-        assert_eq!(st.active().query(), "", "a window key was typed");
     }
 
     #[test]
-    fn ctrl_l_and_ctrl_h_switch_focus_without_the_prefix() {
-        // measured: ^H arrives as Char('h')+CONTROL, distinct from Backspace,
-        // so it is safe to bind in a pane that also edits text
+    fn ctrl_l_and_ctrl_h_no_longer_switch_focus() {
+        // one key does both directions now; the old spellings are gone
         let mut st = CompleterState::new("commits ");
         st.frames = vec![commit_frame("aaaa")];
         st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
-        assert_eq!(st.focus, Focus::Preview);
+        assert_eq!(st.focus, Focus::Columns);
+        ctrl_w(&mut st);
         st.handle(KeyCode::Char('h'), KeyModifiers::CONTROL);
-        assert_eq!(st.focus, Focus::Columns);
+        assert_eq!(st.focus, Focus::Preview, "^h left the preview");
     }
 
     #[test]
-    fn ctrl_l_is_swallowed_rather_than_reaching_the_shell() {
-        // the completer owns the terminal in raw mode, so a ^L bound to
-        // clear-history in the spawning shell must never see it
-        let mut st = CompleterState::new("commits ");
-        st.frames.clear(); // nothing to preview: ^L still must not fall through
-        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
-        assert_eq!(st.focus, Focus::Columns);
-        assert_eq!(st.active().line, "commits ", "^L was typed into the line");
-        assert!(!st.quit);
-    }
-
-    #[test]
-    fn ctrl_w_l_into_an_empty_preview_is_a_no_op() {
+    fn ctrl_w_into_an_empty_preview_is_a_no_op() {
         let mut st = CompleterState::new("commits ");
         st.frames.clear();
-        ctrl_w(&mut st, 'l');
+        ctrl_w(&mut st);
         assert_eq!(st.focus, Focus::Columns);
     }
 
@@ -2308,7 +2254,7 @@ mod tests {
         let mut st = CompleterState::new("hunks ");
         st.frames = vec![commit_frame("aaaa"), commit_frame("bbbb")];
         st.frames_from = "hunks".into();
-        ctrl_w(&mut st, 'l');
+        ctrl_w(&mut st);
         down(&mut st, 1);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.active().line, "hunks [1] ");
