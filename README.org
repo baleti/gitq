@@ -34,6 +34,14 @@ the shape survives.  On a commit, whose text is its tree, it searches the
 tree and yields the matching lines, as it always has.  A =/slashed/=
 pattern is a regex either way.
 
+A derived frame can read a field off the commit it came from with a dotted
+path: =hunks where commit.parents-count == 2=, =hunks where commit.email
+"a@b"=.  Hunks, lines and diff-lines already *carry* =author=, =date= and
+=message= (=Frame::derived= copies them), so the path exists for the rest —
+=sha=, =email=, =tree=, =parents-count= — which were previously
+unreachable from a hunk.  The commits are fetched in one batched lookup for
+the whole stream, the same one =via commit= uses.
+
 Revision ranges are a =where= condition: =commits where revspec
 main..HEAD=.  It takes git's own revspec syntax whole — =HEAD^=, =HEAD~3=,
 =A...B=, =main ^v0.6.0= — and a range git rejects is an error, never an

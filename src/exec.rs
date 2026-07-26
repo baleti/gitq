@@ -64,9 +64,38 @@ pub fn exec_step(frames: Vec<Frame>, step: &Step) -> R<Vec<Frame>> {
             // never per frame.
             let preds: Vec<CompiledCond> = conds.iter().map(CompiledCond::new).collect();
             let now = Utc::now();
+            // `commit.<field>` reads off the commit a frame came from.  The
+            // commits are fetched once for the whole stream, not per frame:
+            // the same batched lookup `via commit` uses.
+            let owners: BTreeMap<String, Frame> = if preds.iter().any(|p| p.via.is_some()) {
+                let shas: Vec<Arc<str>> = frames
+                    .iter()
+                    .filter_map(|f| str_field(f, "commit-sha"))
+                    .collect();
+                batch_lookup(&shas)
+                    .into_iter()
+                    .filter_map(|c| str_field(&c, "sha").map(|s| (s.to_string(), c)))
+                    .collect()
+            } else {
+                BTreeMap::new()
+            };
+            let owner_of = |f: &Frame| -> Option<&Frame> {
+                str_field(f, "commit-sha").and_then(|s| owners.get(s.as_ref()))
+            };
             frames
                 .into_iter()
-                .filter(|f| preds.iter().all(|p| p.eval(f, now)))
+                .filter(|f| {
+                    preds.iter().all(|p| {
+                        p.eval(
+                            if p.via.is_some() {
+                                owner_of(f)
+                            } else {
+                                Some(f)
+                            },
+                            now,
+                        )
+                    })
+                })
                 .collect()
         }
 
@@ -148,6 +177,9 @@ pub fn exec_step(frames: Vec<Frame>, step: &Step) -> R<Vec<Frame>> {
 
 /// One condition with its per-step work hoisted out of the per-frame path.
 struct CompiledCond {
+    /// `Some("commit")` when the field is read off the owning commit rather
+    /// than the frame itself.
+    via: Option<String>,
     field: String,
     op: Op,
     value: Value,
@@ -161,6 +193,10 @@ struct CompiledCond {
 
 impl CompiledCond {
     fn new(c: &Cond) -> CompiledCond {
+        let (via, field) = match crate::parse::split_path(&c.field) {
+            Some((m, f)) => (Some(m.to_string()), f.to_string()),
+            None => (None, c.field.clone()),
+        };
         let re = match (&c.op, &c.value) {
             (Op::Regex, Value::Str(v)) => Regex::new(v).ok(),
             _ => None,
@@ -170,7 +206,8 @@ impl CompiledCond {
             _ => None,
         };
         CompiledCond {
-            field: c.field.clone(),
+            via,
+            field,
             op: c.op,
             value: c.value.clone(),
             re,
@@ -178,7 +215,11 @@ impl CompiledCond {
         }
     }
 
-    fn eval(&self, f: &Frame, now: DateTime<Utc>) -> bool {
+    /// `f` is `None` when a `commit.<field>` path could not be followed —
+    /// the owning commit is unreachable, so the condition simply does not
+    /// hold rather than matching everything.
+    fn eval(&self, f: Option<&Frame>, now: DateTime<Utc>) -> bool {
+        let Some(f) = f else { return false };
         let actual = f.field(&self.field);
 
         let num_cmp = |ord: fn(i64, i64) -> bool| match (&actual, &self.value) {
@@ -1209,7 +1250,7 @@ mod tests {
                 op,
                 value,
             })
-            .eval(&f, now)
+            .eval(Some(&f), now)
         };
         assert!(c("sha", Op::Contains, "abc".into()));
         assert!(!c("sha", Op::Contains, "zzz".into()));

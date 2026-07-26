@@ -66,10 +66,22 @@ pub fn complete_candidates(input: &str) -> Vec<String> {
         // `revspec` is offered by `where` only.  It is not a field of the
         // frame, so `sort`/`pick` must not suggest it — and a comma inside
         // `pick` lands here too, hence the check on the enclosing step.
-        if enclosing_step(ctx).as_deref() == Some("where")
-            && out.iter().any(|f| f == "sha" || f == "commit-sha")
-        {
-            out.push("revspec".to_string());
+        if enclosing_step(ctx).as_deref() == Some("where") {
+            if out.iter().any(|f| f == "sha" || f == "commit-sha") {
+                out.push("revspec".to_string());
+            }
+            // `commit.<field>` reads off the commit a derived frame came
+            // from.  Offered only where there is a commit-sha to follow, and
+            // only for fields the frame does not already carry — `author`,
+            // `date` and `message` are copied onto derived frames, so
+            // `commit.author` would just be a longer spelling of `author`.
+            if out.iter().any(|f| f == "commit-sha") {
+                for cf in COMMIT_FIELDS {
+                    if !out.iter().any(|f| f == cf) {
+                        out.push(format!("commit.{cf}"));
+                    }
+                }
+            }
         }
         return out;
     }
@@ -262,6 +274,20 @@ mod tests {
     #[test]
     fn empty_input_offers_sources() {
         assert_eq!(c(""), strs(COMPLETE_SOURCE_KEYWORDS));
+    }
+
+    #[test]
+    fn dotted_commit_paths_are_offered_where_there_is_a_commit_to_follow() {
+        let out = c("hunks where ");
+        assert!(out.contains(&"commit.email".to_string()));
+        assert!(out.contains(&"commit.parents-count".to_string()));
+        // not the three a derived frame already carries — `commit.author`
+        // would only be a longer way to write `author`
+        assert!(!out.contains(&"commit.author".to_string()));
+        // and not where there is no commit-sha to follow
+        assert!(!c("commits where ").iter().any(|f| f.starts_with("commit.")));
+        // nor in sort/pick
+        assert!(!c("hunks sort ").iter().any(|f| f.starts_with("commit.")));
     }
 
     #[test]
