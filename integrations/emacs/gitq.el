@@ -335,6 +335,33 @@ edited."
         (_ (push (funcall plural n "result") parts)))
       (mapconcat #'identity (nreverse parts) "  \u00b7  "))))
 
+(defcustom gitq-buffer-name-max 60
+  "Longest pipeline shown in a results buffer name, in characters.
+Beyond this the name is elided in the middle, keeping the source and the
+terminal — the two ends that say what the query was for."
+  :type 'natnum :group 'gitq)
+
+(defun gitq--buffer-name (pipeline &optional preview)
+  "Buffer name for PIPELINE's results, or the shared preview buffer.
+
+Results are named after the query that produced them, so several can sit
+side by side and be told apart in the buffer list.  The live preview is
+*not*: it re-renders on every keystroke, and a buffer per keystroke would
+be hundreds of them."
+  (if preview
+      "*gitq*"
+    (let* ((p (string-trim (or pipeline "")))
+           (n (length p))
+           (max gitq-buffer-name-max)
+           (short (if (<= n max)
+                      p
+                    ;; elide the middle: the source and the terminal are the
+                    ;; ends that identify the query
+                    (concat (substring p 0 (- (/ max 2) 1))
+                            "…"
+                            (substring p (- n (- (/ max 2) 1)))))))
+      (if (string-empty-p short) "*gitq*" (format "*gitq: %s*" short)))))
+
 (defun gitq--insert-frame (frame)
   "Insert a human-readable line for FRAME into the current buffer."
   (let ((type  (plist-get frame :type))
@@ -427,14 +454,19 @@ edited."
     (put-text-property start (point) 'gitq-sha (gitq--frame-commit-sha frame))
     (insert "\n")))
 
-(defun gitq--render (frames pipeline-str &optional truncated)
-  "Render FRAMES into the *gitq* results buffer and return that buffer.
+(defun gitq--render (frames pipeline-str &optional truncated preview)
+  "Render FRAMES into a results buffer and return it.
+
+The buffer is named after PIPELINE-STR, so results from different queries
+sit side by side rather than overwriting each other.  With PREVIEW non-nil
+the shared `*gitq*' buffer is used instead: the preview re-renders on every
+keystroke, and naming those would leave a buffer per keystroke behind.
 Hunk and diff-line frames are grouped under commit metadata headers
 (their frames carry the owning commit's author/date/message).  Matches
 of the query's search terms are highlighted with `gitq-match-face'.
 TRUNCATED, if non-nil, is how many further results were omitted (used
 by the live preview)."
-  (with-current-buffer (get-buffer-create "*gitq*")
+  (with-current-buffer (get-buffer-create (gitq--buffer-name pipeline-str preview))
     (let ((inhibit-read-only t)
           (gitq--active-highlights (gitq--highlight-regexps pipeline-str))
           (last-group-sha nil))
@@ -467,6 +499,11 @@ by the live preview)."
 
 (defun gitq--display (frames pipeline-str)
   "Show FRAMES in the *gitq* buffer, taking over the whole frame."
+  ;; the preview buffer was transient scaffolding for this query; leaving it
+  ;; behind would sit next to the named result saying the same thing
+  (when-let ((prev (get-buffer "*gitq*")))
+    (unless (eq prev (get-buffer (gitq--buffer-name pipeline-str)))
+      (kill-buffer prev)))
   (pop-to-buffer (gitq--render frames pipeline-str) '(display-buffer-full-frame)))
 
 (defun gitq--preview-display (frames pipeline-str &optional truncated)
@@ -477,7 +514,7 @@ that silently steals focus from typing, so the previously selected
 window is restored explicitly.  TRUNCATED is passed to `gitq--render'
 (the count of preview results omitted beyond `gitq-preview-max-results')."
   (let ((previously-selected (selected-window)))
-    (display-buffer (gitq--render frames pipeline-str truncated)
+    (display-buffer (gitq--render frames pipeline-str truncated t)
                     '(display-buffer-full-frame))
     (when (window-live-p previously-selected)
       (select-window previously-selected))))
@@ -490,7 +527,7 @@ and unlike a stale set it cannot be misread as this query's answer.
 Matches what the terminal completion preview shows."
   (let ((previously-selected (selected-window)))
     (display-buffer
-     (with-current-buffer (get-buffer-create "*gitq*")
+     (with-current-buffer (get-buffer-create (gitq--buffer-name pipeline-str t))
        (let ((inhibit-read-only t))
          (erase-buffer)
          (insert (propertize (format "gitq: %s\n\n" pipeline-str)

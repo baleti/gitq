@@ -75,6 +75,51 @@ completer emits for the same selections."
   (should (equal (gitq--selection-step '(8 1 2)) "[1..3,8]"))
   (should-not (gitq--selection-step nil)))
 
+;;; --- buffer naming ---------------------------------------------------
+
+(ert-deftest gitq-test-buffer-name ()
+  "Results are named after their query; the preview is not."
+  (should (equal (gitq--buffer-name "commits") "*gitq: commits*"))
+  (should (equal (gitq--buffer-name "hunks grep widget")
+                 "*gitq: hunks grep widget*"))
+  ;; the preview re-renders per keystroke, so it shares one buffer
+  (should (equal (gitq--buffer-name "hunks grep widget" t) "*gitq*"))
+  ;; an empty query has nothing to name itself after
+  (should (equal (gitq--buffer-name "") "*gitq*")))
+
+(ert-deftest gitq-test-buffer-name-elides-long-queries ()
+  "A long pipeline is elided in the middle, keeping both ends."
+  (let* ((long (concat "commits where message \"" (make-string 100 ?x) "\" /count"))
+         (name (gitq--buffer-name long)))
+    (should (< (length name) (+ gitq-buffer-name-max 12)))
+    (should (string-match-p "\\`\\*gitq: commits" name))
+    (should (string-match-p "count\\*\\'" name))
+    (should (string-match-p "…" name))))
+
+(ert-deftest gitq-test-each-query-gets-its-own-buffer ()
+  "Accepting a query adds a buffer rather than replacing the last one.
+Two results can then sit side by side; re-running the same query reuses
+its buffer rather than accumulating duplicates; and the live preview stays
+in one shared buffer, since it re-renders per keystroke."
+  (let ((one '((:type commit :sha "aaa" :author "a" :date "2026-07-01 x" :message "one")))
+        (two '((:type commit :sha "bbb" :author "b" :date "2026-07-02 x" :message "two")))
+        (made nil))
+    (unwind-protect
+        (progn
+          (push (gitq--render one "commits [0]") made)
+          (push (gitq--render two "hunks grep widget") made)
+          (push (gitq--render one "commits [0]") made)      ; same query again
+          (push (gitq--render two "a preview" nil t) made)  ; preview
+          (let ((names (seq-filter (lambda (n) (string-prefix-p "*gitq" n))
+                                   (mapcar #'buffer-name (buffer-list)))))
+            (should (member "*gitq: commits [0]*" names))
+            (should (member "*gitq: hunks grep widget*" names))
+            (should (member "*gitq*" names))
+            ;; the repeat did not make a second copy
+            (should (= 1 (seq-count (lambda (n) (equal n "*gitq: commits [0]*")) names)))))
+      (dolist (b (delete-dups made))
+        (when (buffer-live-p b) (kill-buffer b))))))
+
 ;;; --- buffer arithmetic ------------------------------------------------
 
 (defun gitq-tests--framed-buffer ()
