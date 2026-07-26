@@ -230,6 +230,13 @@ Signals a `user-error' with the CLI's message on failure."
 ;; Guarded, not required: gitq does not depend on evil, and this is a no-op
 ;; without it.
 (with-eval-after-load 'evil
+  ;; Tell evil these are motions.  Without it they carry `:keep-visual nil`,
+  ;; and evil's post-command hook ends the selection after a non-motion — so
+  ;; in visual state the keys appeared to do nothing at all.  `evil-next-line`
+  ;; carries `:keep-visual t` for exactly this reason.
+  (when (fboundp 'evil-declare-motion)
+    (evil-declare-motion 'gitq-results-next-entry)
+    (evil-declare-motion 'gitq-results-previous-entry))
   (when (fboundp 'evil-define-key*)
     (evil-define-key* '(normal motion visual) gitq-results-mode-map
       "j"           #'gitq-results-next-entry
