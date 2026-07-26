@@ -2447,3 +2447,166 @@ mod tests {
         assert_eq!(st.active().line, prefix);
     }
 }
+
+/// Rendering tests, driven through ratatui's `TestBackend`.
+///
+/// The state machine above is unit-tested, but every bug reported against
+/// this UI has been in `draw` — a frame vanishing, a highlight stopping at
+/// the text, the cursor shifting the line as it moved.  None of those are
+/// reachable without actually rendering, so these draw into an off-screen
+/// buffer and read the cells back.
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+    use crate::frame::{FrameType, Value};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn hunk(path: &str, sha: &str, body: &str) -> Frame {
+        Frame::new(
+            FrameType::Hunk,
+            [
+                ("path", Value::from(path)),
+                ("commit-sha", Value::from(sha)),
+                ("start-line", Value::Num(1)),
+                ("end-line", Value::Num(9)),
+                ("content", Value::from(body)),
+            ],
+        )
+    }
+
+    /// Render ST at WxH and return the screen as lines of text.
+    fn screen(st: &mut CompleterState, w: u16, h: u16) -> Vec<String> {
+        let mut term = Terminal::new(TestBackend::new(w, h)).expect("backend");
+        term.draw(|f| draw(f, st)).expect("draw");
+        let buf = term.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// The style of the cell at (x, y).
+    fn cell_style(st: &mut CompleterState, w: u16, h: u16, x: u16, y: u16) -> Style {
+        let mut term = Terminal::new(TestBackend::new(w, h)).expect("backend");
+        term.draw(|f| draw(f, st)).expect("draw");
+        let buf = term.backend().buffer().clone();
+        buf[(x, y)].style()
+    }
+
+    fn previewing(frames: Vec<Frame>) -> CompleterState {
+        let mut st = CompleterState::new("hunks ");
+        st.frames = frames;
+        st.frames_from = "hunks".into();
+        st.handle(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(st.focus, Focus::Preview, "not in the preview");
+        st
+    }
+
+    #[test]
+    fn a_frame_too_tall_for_the_space_is_clipped_not_dropped() {
+        // the reported bug: ratatui's List renders only items that fit
+        // entirely, so the last hunk vanished until it was selected
+        let body = "+a\n+b\n+c\n+d\n+e\n+f\n";
+        let mut st = previewing(vec![hunk("one.rs", "s1", body), hunk("two.rs", "s2", body)]);
+        let rows = screen(&mut st, 60, 12);
+        let joined = rows.join("\n");
+        assert!(joined.contains("one.rs"), "first frame missing:\n{joined}");
+        assert!(
+            joined.contains("two.rs"),
+            "second frame dropped instead of clipped:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn the_selected_row_is_highlighted_across_the_whole_width() {
+        // a Line's style reaches only its text; the row has to be padded or
+        // the selection reads as ragged text rather than a band
+        let mut st = previewing(vec![hunk("a.rs", "s1", "+x\n"), hunk("b.rs", "s2", "+y\n")]);
+        let (w, h) = (60u16, 10u16);
+        // find the row the selection is on, then check its far-right cell
+        let rows = screen(&mut st, w, h);
+        let y = rows
+            .iter()
+            .position(|r| r.contains("a.rs"))
+            .expect("selected frame not drawn") as u16;
+        // both cells inside the preview pane, not the candidate column:
+        // one just past the frame's text, one at the far edge
+        let near = cell_style(&mut st, w, h, w - 20, y);
+        let far = cell_style(&mut st, w, h, w - 1, y);
+        assert_eq!(
+            near.bg, far.bg,
+            "highlight stopped before the right edge (row {y})"
+        );
+        assert!(
+            matches!(near.bg, Some(Color::Indexed(_))),
+            "selected row carries no background: {:?}",
+            near.bg
+        );
+    }
+
+    #[test]
+    fn the_stats_line_heads_the_preview() {
+        let mut st = previewing(vec![
+            hunk("a.rs", "s1", "+x\n-y\n"),
+            hunk("b.rs", "s2", "+z\n"),
+        ]);
+        let rows = screen(&mut st, 70, 10);
+        let joined = rows.join("\n");
+        assert!(joined.contains("2 hunks"), "no stats line:\n{joined}");
+        assert!(joined.contains("2 files"), "{joined}");
+        assert!(joined.contains("+2 -1"), "{joined}");
+    }
+
+    #[test]
+    fn the_cursor_does_not_shift_the_line_as_it_moves() {
+        // it used to be an inserted block glyph, so every character after it
+        // moved one cell right
+        let mut st = CompleterState::new("hunks grep x");
+        let at_end = screen(&mut st, 60, 8)[0].clone();
+        st.active_mut().move_cursor(0);
+        let at_start = screen(&mut st, 60, 8)[0].clone();
+        assert_eq!(
+            at_end.trim_end(),
+            at_start.trim_end(),
+            "the line moved when the cursor did"
+        );
+    }
+
+    #[test]
+    fn the_prompt_shows_the_pipeline_being_edited() {
+        let mut st = CompleterState::new("hunks grep x");
+        let rows = screen(&mut st, 60, 8);
+        assert!(rows[0].contains("hunks grep x"), "{}", rows[0]);
+    }
+
+    #[test]
+    fn the_palette_overlays_the_columns_rather_than_replacing_them() {
+        let mut st = CompleterState::new("commits ");
+        st.handle(KeyCode::Char('x'), KeyModifiers::ALT);
+        let rows = screen(&mut st, 70, 12);
+        let joined = rows.join("\n");
+        assert!(joined.contains("M-x"), "palette not drawn:\n{joined}");
+        assert!(
+            joined.contains("scrollback-browse"),
+            "palette empty:\n{joined}"
+        );
+        // the pipeline line survives underneath
+        assert!(rows[0].contains("commits"), "{}", rows[0]);
+    }
+
+    #[test]
+    fn drawing_into_a_tiny_terminal_does_not_panic() {
+        // layout arithmetic with saturating widths: a 1x1 terminal is the
+        // degenerate case every Rect split has to survive
+        for (w, h) in [(1u16, 1u16), (3, 2), (10, 3), (200, 60)] {
+            let mut st = previewing(vec![hunk("a.rs", "s1", "+x\n")]);
+            let _ = screen(&mut st, w, h);
+            let mut st = CompleterState::new("commits ");
+            let _ = screen(&mut st, w, h);
+        }
+    }
+}
