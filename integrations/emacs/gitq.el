@@ -57,8 +57,34 @@ final run (RET) always renders everything."
 (defcustom gitq-match-face 'match
   "Face used to highlight query matches in the results buffer.
 Defaults to the standard `match' face, the same one grep and occur
-buffers use."
+buffers use.  Used for the first search term; see `gitq-match-faces'."
   :type 'face :group 'gitq)
+
+(defface gitq-match-2
+  '((t :inherit match :background "#3a5f8a" :foreground "white"))
+  "Face for the second search term in a results buffer."
+  :group 'gitq)
+
+(defface gitq-match-3
+  '((t :inherit match :background "#7a4a7a" :foreground "white"))
+  "Face for the third search term in a results buffer."
+  :group 'gitq)
+
+(defface gitq-match-4
+  '((t :inherit match :background "#6a5a2a" :foreground "white"))
+  "Face for the fourth search term in a results buffer."
+  :group 'gitq)
+
+(defcustom gitq-match-faces '(gitq-match-2 gitq-match-3 gitq-match-4)
+  "Faces for the second and later search terms, in order.
+
+Successive `grep' steps intersect, so a row on screen matched *all* of
+them — `hunks grep dgcl grep along' shows only rows containing both.
+Painting every term the same colour hides which is which, and cycling
+through a short palette is what the terminal completer does.  The first
+term uses `gitq-match-face'; this list continues from the second, and
+wraps if there are more terms than faces."
+  :type '(repeat face) :group 'gitq)
 
 (defcustom gitq-release-url "https://github.com/baleti/gitq/releases/latest/download/"
   "Base URL prebuilt gitq binaries are downloaded from.
@@ -259,15 +285,29 @@ values are matched literally; /regex/ literals as regexps."
 (defvar gitq--active-highlights nil
   "Regexps highlighted while rendering the current results, or nil.")
 
+(defun gitq--match-face (n)
+  "Face for the Nth search term, counting from zero."
+  (if (zerop n)
+      gitq-match-face
+    (let ((rest gitq-match-faces))
+      (if rest
+          (nth (mod (1- n) (length rest)) rest)
+        gitq-match-face))))
+
 (defun gitq--apply-highlights (start end)
-  "Add `gitq-match-face' to matches of the active regexps in START..END."
-  (dolist (re gitq--active-highlights)
-    (save-excursion
-      (goto-char start)
-      (ignore-errors
-        (while (re-search-forward re end t)
-          (add-face-text-property (match-beginning 0) (match-end 0)
-                                  gitq-match-face))))))
+  "Highlight matches of the active regexps in START..END.
+Each search term gets its own face, so intersecting `grep' steps can be
+told apart — see `gitq-match-faces'."
+  (let ((n 0))
+    (dolist (re gitq--active-highlights)
+      (let ((face (gitq--match-face n)))
+        (save-excursion
+          (goto-char start)
+          (ignore-errors
+            (while (re-search-forward re end t)
+              (add-face-text-property (match-beginning 0) (match-end 0)
+                                      face)))))
+      (setq n (1+ n)))))
 
 (defun gitq--insert-commit-header (frame)
   "Insert a commit metadata header line for a hunk/diff-line FRAME."

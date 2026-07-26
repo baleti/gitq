@@ -62,6 +62,35 @@ Mirrors `preview_stats' in src/complete_tui.rs."
     (should-not (string-match-p (regexp-quote "..") s)))
   (should-not (gitq--stats-line nil)))
 
+(ert-deftest gitq-test-each-search-term-gets-its-own-face ()
+  "Intersecting greps are told apart by colour, as in the terminal.
+Successive `grep' steps intersect, so a visible row matched all of them;
+painting them alike hides which is which."
+  (with-temp-buffer
+    (let ((gitq--active-highlights
+           (gitq--highlight-regexps "hunks grep dgcl grep along")))
+      (should (= (length gitq--active-highlights) 2))
+      (insert "a dgcl and along here\n")
+      (gitq--apply-highlights (point-min) (point-max))
+      (goto-char (point-min))
+      (search-forward "dgcl")
+      (let ((first (get-text-property (1- (point)) 'face)))
+        (search-forward "along")
+        (let ((second (get-text-property (1- (point)) 'face)))
+          (should first)
+          (should second)
+          (should-not (equal first second)))))))
+
+(ert-deftest gitq-test-match-faces-cycle ()
+  "The palette wraps rather than running out."
+  (should (equal (gitq--match-face 0) gitq-match-face))
+  (should (equal (gitq--match-face 1) (nth 0 gitq-match-faces)))
+  (should (equal (gitq--match-face (1+ (length gitq-match-faces)))
+                 (nth 0 gitq-match-faces)))
+  ;; with the palette emptied, everything falls back to one face
+  (let ((gitq-match-faces nil))
+    (should (equal (gitq--match-face 3) gitq-match-face))))
+
 ;;; --- selection steps -------------------------------------------------
 
 (ert-deftest gitq-test-selection-step ()
