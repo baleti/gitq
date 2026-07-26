@@ -254,14 +254,15 @@ The file sets up three things.
 did, captured at the first prompt — so it sits alongside fzf-tab rather
 than replacing it, and needs it just as little.
 
-Fuzzy-filtered *miller columns* on the left and a wide live preview of the
-pipeline the highlighted candidate would produce on the right:
+A fuzzy-filtered candidate column on the left and a wide live preview of
+the pipeline the highlighted candidate would produce on the right:
 
 - type to fuzzy-filter the active column; =↵= accepts and puts the pipeline
   on the command line; =Esc= / =^C= cancel.
-- =Tab= commits the highlighted candidate and opens the next column, so the
-  committed columns stay visible to the left as the pipeline grows one token
-  at a time; =⌫= on an empty query steps back a column.
+- =Tab= commits the highlighted candidate and moves the column on to the
+  next position, so the pipeline grows one token at a time in the line
+  above; =⌫= on an empty query undoes the last move — a committed token, a
+  preview selection or a drill alike.
 - =v= starts a visual range in the preview and movement extends it; =m=
   banks the range and leaves visual mode, so several disjoint runs can be
   gathered before acting; =m= with no range toggles the row under the
@@ -270,9 +271,9 @@ pipeline the highlighted candidate would produce on the right:
   than hidden state.
 - =^L= steps into the preview: the result frames become a selectable list,
   and =↵= (or =^L= again) *pivots* onto the highlighted one — a fresh column
-  opens anchored on that object (a commit by its SHA, a hunk re-derived
-  through =diff.hunks=, …), so you drill from a query's results into a new
-  query rooted at one of them.  Same object-graph walk as the Emacs
+  re-roots on that object (a commit by its SHA, a hunk re-derived through
+  =diff.hunks=, …), so you drill from a query's results into a new query
+  rooted at one of them.  Same object-graph walk as the Emacs
   =gitq-results-refine= =TAB=, and the same anchoring grammar.
 - =M-x= opens a command palette for actions that are not part of a pipeline
   — currently =scrollback-browse=.  Pipeline steps deliberately stay in the

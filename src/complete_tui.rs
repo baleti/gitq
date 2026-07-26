@@ -1,15 +1,20 @@
 //! Interactive columnar completer for gitq pipelines.
 //!
-//! A row of *miller columns* on the left and a wide live preview on the
-//! right.  Each column is the fuzzy-filtered completion set for one position
-//! in the pipeline; Tab commits the highlighted candidate and opens the next
-//! column, so committed columns stay visible to the left as the pipeline
-//! grows.  `Ctrl-L` steps into the preview: the result frames become a
-//! selectable list, and choosing one *pivots* — a fresh column opens,
-//! anchored on the selected object (a commit by its SHA, a hunk re-derived
-//! through `diff.hunks`, …), exactly as the Emacs `gitq-results-refine`
-//! walk does.  That is the embark-style move: act on a concrete object in
-//! the results and get the completions valid *for it*.
+//! One fuzzy-filtered candidate column on the left and a wide live preview
+//! on the right.  The column always shows the completion set for the current
+//! position; Tab commits the highlighted candidate and moves the column on,
+//! Backspace steps it back.  The pipeline built so far is spelled out in the
+//! line above, which is why a second column earned nothing: it could only
+//! restate what that line already says, at the cost of the width the preview
+//! needs.
+//!
+//! `Ctrl-L` steps into the preview.  The result frames become a selectable
+//! list, and choosing one *pivots* — the column re-roots on that object (a
+//! commit by its SHA, a hunk re-derived through `diff.hunks`, …), exactly as
+//! the Emacs `gitq-results-refine` walk does.  That is the embark-style move:
+//! act on a concrete object in the results and get the completions valid *for
+//! it*.  `v`/`m` there select several rows instead, which narrows the query
+//! with a positional `[...]` step rather than re-rooting it.
 //!
 //! It is a front-end over gitq's own brain, never a second one: candidates
 //! and kinds come from [`complete_candidates`]/[`annotate`], the preview and
@@ -256,7 +261,8 @@ fn preview_result(pipeline: &str) -> Result<Vec<Frame>, String> {
 
 // --- state ---------------------------------------------------------------
 
-/// One miller column: the completion set for a single pipeline position.
+/// The candidate column: the completion set for the current pipeline
+/// position, plus where it has been.
 struct Column {
     /// Committed pipeline up to (not including) this column; trailing space
     /// when non-empty.
@@ -395,8 +401,9 @@ enum Focus {
 }
 
 struct CompleterState {
-    /// At least one; the last is the active (deepest) column.
-    columns: Vec<Column>,
+    /// The single candidate column.  Its own `history` carries the moves
+    /// that have been made through it.
+    column: Column,
     focus: Focus,
     /// Frames of the active column's effective pipeline, and the pipeline
     /// they were computed for.
@@ -429,7 +436,7 @@ impl CompleterState {
     fn new(input: &str) -> Self {
         let (head, partial) = split_last_token(input);
         let mut st = CompleterState {
-            columns: vec![Column::new(head, partial)],
+            column: Column::new(head, partial),
             focus: Focus::Columns,
             frames: Vec::new(),
             message: None,
@@ -449,11 +456,11 @@ impl CompleterState {
     }
 
     fn active(&self) -> &Column {
-        self.columns.last().expect("at least one column")
+        &self.column
     }
 
     fn active_mut(&mut self) -> &mut Column {
-        self.columns.last_mut().expect("at least one column")
+        &mut self.column
     }
 
     fn effective(&self) -> String {
@@ -525,9 +532,7 @@ impl CompleterState {
     /// Backspace on an empty query: undo the last move — a committed token,
     /// a preview selection, or a drill onto an object, all the same way.
     fn pop_column(&mut self) {
-        if !self.active_mut().back() && self.columns.len() > 1 {
-            self.columns.pop();
-        }
+        self.active_mut().back();
     }
 
     /// Ctrl-L: step into the preview to drill its frames (only if there are
@@ -849,29 +854,6 @@ fn event_loop(
 
 // --- drawing -------------------------------------------------------------
 
-/// Which columns fit, right-aligned, and how wide each is drawn.
-///
-/// Returns the index of the leftmost column to show and its width, then one
-/// per column after it.  Taken from the right so the *active* column — the
-/// one being typed into — is never the one dropped, and always keeping at
-/// least one even when it cannot fit, since showing no candidates at all is
-/// worse than a cramped column.
-fn fit_columns(naturals: &[u16], avail: u16, preview_min: u16) -> (usize, Vec<u16>) {
-    let mut widths: Vec<u16> = Vec::new();
-    let mut used = 0u16;
-    let mut start = naturals.len();
-    for &w in naturals.iter().rev() {
-        if !widths.is_empty() && used + w + preview_min > avail {
-            break;
-        }
-        used += w;
-        widths.push(w);
-        start -= 1;
-    }
-    widths.reverse();
-    (start, widths)
-}
-
 fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
     let dim = Style::default().fg(Color::DarkGray);
     let sel = Style::default().add_modifier(Modifier::REVERSED);
@@ -921,49 +903,42 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
             .min(avail.saturating_sub(preview_min).max(12) as usize) as u16
     };
 
-    let naturals: Vec<u16> = st.columns.iter().map(natural).collect();
-    let (start, widths) = fit_columns(&naturals, avail, preview_min);
-    let shown = &st.columns[start..];
+    let col = st.active();
+    let cells =
+        Layout::horizontal([Constraint::Length(natural(col)), Constraint::Min(10)]).split(rows[1]);
 
-    let mut constraints: Vec<Constraint> = widths.iter().map(|&w| Constraint::Length(w)).collect();
-    constraints.push(Constraint::Min(10));
-    let cells = Layout::horizontal(constraints).split(rows[1]);
-
-    for (i, col) in shown.iter().enumerate() {
-        let is_active = start + i == st.columns.len() - 1;
-        let hl = if is_active && st.focus == Focus::Columns {
-            sel
-        } else {
-            sel_dim
-        };
-        let items: Vec<ListItem> = col
-            .filtered
-            .iter()
-            .map(|&j| {
-                let c = &col.all[j];
-                ListItem::new(Line::from(vec![
-                    Span::raw(c.text.clone()),
-                    Span::raw(" "),
-                    Span::styled(c.kind.to_string(), dim),
-                ]))
-            })
-            .collect();
-        let mut ls = ListState::default();
-        if !col.filtered.is_empty() {
-            ls.select(Some(col.selected));
-        }
-        f.render_stateful_widget(
-            List::new(items)
-                .block(Block::default().borders(Borders::RIGHT))
-                .highlight_style(hl)
-                .highlight_symbol("▌"),
-            cells[i],
-            &mut ls,
-        );
+    let hl = if st.focus == Focus::Columns {
+        sel
+    } else {
+        sel_dim
+    };
+    let items: Vec<ListItem> = col
+        .filtered
+        .iter()
+        .map(|&j| {
+            let c = &col.all[j];
+            ListItem::new(Line::from(vec![
+                Span::raw(c.text.clone()),
+                Span::raw(" "),
+                Span::styled(c.kind.to_string(), dim),
+            ]))
+        })
+        .collect();
+    let mut ls = ListState::default();
+    if !col.filtered.is_empty() {
+        ls.select(Some(col.selected));
     }
+    f.render_stateful_widget(
+        List::new(items)
+            .block(Block::default().borders(Borders::RIGHT))
+            .highlight_style(hl)
+            .highlight_symbol("▌"),
+        cells[0],
+        &mut ls,
+    );
 
     // preview cell: an interactive frame list when focused, else text
-    let pv = cells[shown.len()];
+    let pv = cells[1];
     if st.focus == Focus::Preview {
         let vis = st.visual_range();
         let items: Vec<ListItem> = st
@@ -1199,7 +1174,6 @@ mod tests {
         st.handle(KeyCode::Tab, KeyModifiers::NONE);
         // the committed token is already visible in the pipeline line, so it
         // does not also get a column of its own
-        assert_eq!(st.columns.len(), 1);
         assert_eq!(st.active().prefix, "commits where ");
         // and the new position offers fields, not steps
         assert!(st.active().all.iter().any(|c| c.kind == "field"));
@@ -1212,7 +1186,6 @@ mod tests {
         let advanced = st.active().prefix.clone();
         assert_ne!(advanced, "commits ");
         st.handle(KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(st.columns.len(), 1);
         assert_eq!(st.active().prefix, "commits ");
     }
 
@@ -1226,7 +1199,6 @@ mod tests {
         st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.active().prefix, "cafef00d ");
-        assert_eq!(st.columns.len(), 1, "a drill opened a column");
 
         st.handle(KeyCode::Tab, KeyModifiers::NONE); // a token on top of it
         assert!(st.active().prefix.starts_with("cafef00d "));
@@ -1358,46 +1330,6 @@ mod tests {
         assert_eq!(st.focus, Focus::Columns);
     }
 
-    // --- column widths ----------------------------------------------------
-
-    #[test]
-    fn columns_are_sized_individually_not_to_a_shared_constant() {
-        let (start, widths) = fit_columns(&[12, 31, 18], 120, 30);
-        assert_eq!(start, 0);
-        assert_eq!(
-            widths,
-            vec![12, 31, 18],
-            "a column was clipped to a constant"
-        );
-    }
-
-    #[test]
-    fn columns_are_dropped_from_the_left_when_they_stop_fitting() {
-        // 40+40+40 + 30 preview > 100, so the leftmost goes first and the
-        // active (rightmost) column always survives
-        let (start, widths) = fit_columns(&[40, 40, 40], 100, 30);
-        assert_eq!(start, 2);
-        assert_eq!(widths, vec![40]);
-    }
-
-    #[test]
-    fn one_column_is_kept_even_when_it_cannot_fit() {
-        // showing no candidates at all is worse than a cramped column
-        let (start, widths) = fit_columns(&[80], 40, 30);
-        assert_eq!(start, 0);
-        assert_eq!(widths.len(), 1);
-    }
-
-    #[test]
-    fn the_preview_keeps_its_minimum_when_columns_would_crowd_it() {
-        let (_, widths) = fit_columns(&[20, 20, 20, 20], 100, 30);
-        let used: u16 = widths.iter().sum();
-        assert!(
-            used + 30 <= 100 || widths.len() == 1,
-            "columns crowded the preview out: {widths:?}"
-        );
-    }
-
     // --- visual selection in the preview ----------------------------------
 
     fn previewing(n: usize) -> CompleterState {
@@ -1501,17 +1433,11 @@ mod tests {
     #[test]
     fn a_selection_narrows_the_column_it_came_from_without_opening_one() {
         let mut st = previewing(8);
-        let cols = st.columns.len();
         st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
         down(&mut st, 2);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.focus, Focus::Columns);
         assert_eq!(st.active().prefix, "commits [0..3] ");
-        assert_eq!(
-            st.columns.len(),
-            cols,
-            "a selection opened a column instead of narrowing in place"
-        );
         // the shape is unchanged, so the same candidates still apply
         assert!(st.active().all.iter().any(|c| c.kind == "step"));
         // and the selection does not linger
@@ -1533,10 +1459,8 @@ mod tests {
     fn pivoting_with_no_selection_still_re_roots_on_the_object() {
         // the single-object drill must not regress into a slice
         let mut st = previewing(3);
-        let cols = st.columns.len();
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.active().prefix, "sha0 ");
-        assert_eq!(st.columns.len(), cols, "a drill opened a column");
     }
 
     #[test]
@@ -1682,15 +1606,13 @@ mod tests {
     }
 
     #[test]
-    fn the_palette_does_not_disturb_the_columns_behind_it() {
+    fn the_palette_does_not_disturb_the_column_behind_it() {
         let mut st = CompleterState::new("commits ");
         st.handle(KeyCode::Tab, KeyModifiers::NONE);
-        let cols = st.columns.len();
         let prefix = st.active().prefix.clone();
         let (c, m) = alt('x');
         st.handle(c, m);
         st.handle(KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(st.columns.len(), cols);
         assert_eq!(st.active().prefix, prefix);
     }
 }
