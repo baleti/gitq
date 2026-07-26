@@ -29,7 +29,13 @@ test:
 	@# that logic has no Rust to test it, so it gets its own check.
 	@command -v zsh >/dev/null 2>&1 \
 		&& zsh tools/test-zsh-completion.zsh \
-		|| echo "(zsh not installed - skipping completion prefix tests)"
+		&& zsh tools/test-zsh-widget.zsh \
+		|| echo "(zsh not installed - skipping zsh tests)"
+	@# The bash integration is a completion function, so it can be driven
+	@# directly: set COMP_LINE and read COMPREPLY back, no terminal needed.
+	@command -v bash >/dev/null 2>&1 \
+		&& bash tools/test-bash-widget.bash \
+		|| echo "(bash not installed - skipping bash tests)"
 	@# The Emacs client re-implements two specs the binary also owns
 	@# (`gitq--stats-line` / preview_stats, `gitq--selection-step` /
 	@# selection_step).  Two implementations of one spec drift silently, so
