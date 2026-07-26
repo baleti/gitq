@@ -168,6 +168,12 @@ when available), =b= branches off, =c= copies the SHA, =f= / =F= fold hunk
 bodies.  Re-invoking =gitq= from a results buffer pre-fills the minibuffer
 with the query that built it.
 
+With an active region, =TAB= refines *every* result the region touches at
+once, as a positional step on that buffer's own query — the same
+=[0:3,5]= the terminal completer emits, and the reason multi-select works
+for hunks and diff lines, whose identity is compound and cannot be pinned
+by field equality.
+
 =TAB= (or =.=) continues the query *from the object under point*.  The
 minibuffer offers the moves that make sense there — the morphisms whose
 domain that frame's shape satisfies, then the steps and terminals valid
@@ -255,6 +261,12 @@ pipeline the highlighted candidate would produce on the right:
 - =Tab= commits the highlighted candidate and opens the next column, so the
   committed columns stay visible to the left as the pipeline grows one token
   at a time; =⌫= on an empty query steps back a column.
+- =v= starts a visual range in the preview and movement extends it; =m=
+  banks the range and leaves visual mode, so several disjoint runs can be
+  gathered before acting; =m= with no range toggles the row under the
+  cursor.  =↵= then acts on the whole selection, which becomes a
+  positional step on the query you are in (=commits [0:3,5:7]=) rather
+  than hidden state.
 - =^L= steps into the preview: the result frames become a selectable list,
   and =↵= (or =^L= again) *pivots* onto the highlighted one — a fresh column
   opens anchored on that object (a commit by its SHA, a hunk re-derived

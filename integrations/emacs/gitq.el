@@ -962,6 +962,54 @@ with RET, never fired by a single TAB."
        (gitq--display frames pipeline))
       (_ (gitq (gitq--read-pipeline "gitq> " (concat pipeline " ")))))))
 
+(defun gitq--frame-starts ()
+  "Buffer positions where each result frame begins, in result order.
+The rendered buffer is the only place the result *order* survives — the
+plists carry identity, not position — so row numbers are recovered by
+walking the `gitq-frame' property runs from the top."
+  (let ((pos (point-min))
+        (starts nil))
+    (while (and pos (< pos (point-max)))
+      (when (get-text-property pos 'gitq-frame)
+        (push pos starts))
+      (setq pos (next-single-property-change pos 'gitq-frame)))
+    (nreverse starts)))
+
+(defun gitq--rows-in-region (beg end)
+  "0-based indices of the result frames the region BEG..END touches.
+A frame counts when any part of it lies in the region, so a partly
+covered first or last row is included rather than silently dropped."
+  (let ((starts (gitq--frame-starts))
+        (rows nil)
+        (i 0))
+    (dolist (start starts)
+      (let ((stop (or (next-single-property-change start 'gitq-frame)
+                      (point-max))))
+        (when (and (< start end) (> stop beg))
+          (push i rows)))
+      (setq i (1+ i)))
+    (nreverse rows)))
+
+(defun gitq--selection-step (rows)
+  "ROWS as a gitq positional selection, e.g. \='[0:3,5]\='.
+Contiguous rows collapse into half-open runs, matching the language and
+the terminal completer's visual mode.  Emitting the query rather than
+carrying hidden selection state is the point: what was selected stays
+readable, editable and re-runnable."
+  (when rows
+    (let ((runs nil))
+      (dolist (r (sort (copy-sequence rows) #'<))
+        (if (and runs (= (cdr (car runs)) (1- r)))
+            (setcdr (car runs) r)
+          (push (cons r r) runs)))
+      (concat "["
+              (mapconcat (lambda (run)
+                           (if (= (car run) (cdr run))
+                               (number-to-string (car run))
+                             (format "%d:%d" (car run) (1+ (cdr run)))))
+                         (nreverse runs) ",")
+              "]"))))
+
 (defun gitq-results-refine ()
   "Continue the query from the object under point, with completion.
 The minibuffer offers the moves that make sense /here/: the morphisms
@@ -971,18 +1019,39 @@ after TAB walks down git's object graph — commit, its hunks, the
 history of the file a hunk touches — each result buffer being itself a
 query you can refine again.
 
+With an active region, every result the region touches is refined at
+once: the move is applied to a positional selection of this buffer's own
+query (`commits ... [0:3,5]'), which is what makes acting on several
+results expressible for frame shapes that have no single identifying
+field.  A partly covered row counts as covered.
+
 With point on a group header the commit that heads the group is the
 anchor; with point on neither (the query line at the top, say) the
 whole query is refined instead of a single object."
   (interactive nil gitq-results-mode)
   (gitq--ensure-executable)
-  (let* ((frame (or (get-text-property (point) 'gitq-frame)
+  (let* ((rows  (and (use-region-p)
+                     (gitq--rows-in-region (region-beginning) (region-end))))
+         (frame (or (get-text-property (point) 'gitq-frame)
                     (get-text-property (line-beginning-position) 'gitq-frame)))
          (sha   (or (get-text-property (point) 'gitq-sha)
                     (get-text-property (line-beginning-position) 'gitq-sha)))
-         (base  (or (and frame (gitq--frame-anchor frame gitq--buffer-pipeline))
+         ;; An active region refines *all* the rows it covers, as a
+         ;; positional step on this buffer's own query.  Several rows have no
+         ;; single object to anchor on -- and unlike a single frame, they
+         ;; cannot be identified by field equality at all when the shape is a
+         ;; hunk or a diff line, whose identity is compound.  Position is the
+         ;; one handle that works for every frame shape.
+         (base  (or (and rows
+                         (concat (gitq--pipeline-without-terminal
+                                  gitq--buffer-pipeline)
+                                 " " (gitq--selection-step rows)))
+                    (and frame (gitq--frame-anchor frame gitq--buffer-pipeline))
                     sha
                     (gitq--pipeline-without-terminal gitq--buffer-pipeline))))
+    ;; the region has been consumed; leaving it active would make the next
+    ;; refine silently re-select rows of a result set that no longer exists
+    (when rows (deactivate-mark))
     (when (or (null base) (string-empty-p base))
       (user-error "gitq: nothing here to refine"))
     (let* ((moves (gitq--refine-moves base))
