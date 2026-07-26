@@ -204,6 +204,11 @@ once, as a positional step on that buffer's own query — the same
 for hunks and diff lines, whose identity is compound and cannot be pinned
 by field equality.
 
+Each search term is highlighted in its own colour, since successive
+=grep= steps intersect — every visible row matched all of them, and one
+colour for all would hide which is which.  Customise with
+=gitq-match-face= (the first term) and =gitq-match-faces= (the rest).
+
 Each accepted query gets its own buffer, named after it — =*gitq: hunks
 grep widget*= — so results from different queries sit side by side instead
 of overwriting one another; re-running a query reuses its buffer.  The live
