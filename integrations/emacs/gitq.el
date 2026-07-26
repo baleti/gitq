@@ -60,19 +60,25 @@ Defaults to the standard `match' face, the same one grep and occur
 buffers use.  Used for the first search term; see `gitq-match-faces'."
   :type 'face :group 'gitq)
 
-(defface gitq-match-2
-  '((t :inherit match :background "#3a5f8a" :foreground "white"))
-  "Face for the second search term in a results buffer."
+;; `hi-lock' is built in, and its faces are the standard set for
+;; highlighting several patterns at once — which is why themes customise
+;; them.  Inheriting from those means the highlights are drawn from the
+;; theme's own palette instead of hardcoded hex that fights it.
+(require 'hi-lock)
+
+(defface gitq-match-2 '((t :inherit hi-blue))
+  "Face for the second search term in a results buffer.
+Inherits `hi-blue', so it follows the current theme."
   :group 'gitq)
 
-(defface gitq-match-3
-  '((t :inherit match :background "#7a4a7a" :foreground "white"))
-  "Face for the third search term in a results buffer."
+(defface gitq-match-3 '((t :inherit hi-pink))
+  "Face for the third search term in a results buffer.
+Inherits `hi-pink', so it follows the current theme."
   :group 'gitq)
 
-(defface gitq-match-4
-  '((t :inherit match :background "#6a5a2a" :foreground "white"))
-  "Face for the fourth search term in a results buffer."
+(defface gitq-match-4 '((t :inherit hi-yellow))
+  "Face for the fourth search term in a results buffer.
+Inherits `hi-yellow', so it follows the current theme."
   :group 'gitq)
 
 (defcustom gitq-match-faces '(gitq-match-2 gitq-match-3 gitq-match-4)
@@ -83,7 +89,13 @@ them — `hunks grep dgcl grep along' shows only rows containing both.
 Painting every term the same colour hides which is which, and cycling
 through a short palette is what the terminal completer does.  The first
 term uses `gitq-match-face'; this list continues from the second, and
-wraps if there are more terms than faces."
+wraps if there are more terms than faces.
+
+The defaults inherit `hi-blue', `hi-pink' and `hi-yellow' — the standard
+`hi-lock' faces, which themes customise — so highlights come from the
+current theme's palette rather than fixed colours that fight it.  Green is
+deliberately absent from the list: `match', which the first term uses, is
+already green in several common themes."
   :type '(repeat face) :group 'gitq)
 
 (defcustom gitq-release-url "https://github.com/baleti/gitq/releases/latest/download/"
@@ -208,6 +220,36 @@ Signals a `user-error' with the CLI's message on failure."
     (define-key m (kbd "F")         #'gitq-results-toggle-fold-all)
     m)
   "Keymap for `gitq-results-mode'.")
+
+;; Evil owns the motion keys.  `j', `k' and the arrows live in evil's
+;; motion-state map, which is consulted *before* the major mode's, so
+;; binding them above has no effect for anyone running evil — the keys are
+;; there, and `evil-next-line' runs instead.  They have to be defined in the
+;; state map for this mode as well.
+;;
+;; Guarded, not required: gitq does not depend on evil, and this is a no-op
+;; without it.
+(with-eval-after-load 'evil
+  (when (fboundp 'evil-define-key*)
+    (evil-define-key* '(normal motion visual) gitq-results-mode-map
+      "j"           #'gitq-results-next-entry
+      "k"           #'gitq-results-previous-entry
+      "n"           #'gitq-results-next-entry
+      "p"           #'gitq-results-previous-entry
+      (kbd "<down>") #'gitq-results-next-entry
+      (kbd "<up>")   #'gitq-results-previous-entry
+      (kbd "C-n")    #'gitq-results-next-entry
+      (kbd "C-p")    #'gitq-results-previous-entry
+      ;; and the actions, so evil's own RET/TAB do not take them either
+      (kbd "RET")    #'gitq-results-visit
+      (kbd "TAB")    #'gitq-results-refine
+      "."            #'gitq-results-refine
+      "b"            #'gitq-results-branch-off
+      "c"            #'gitq-results-copy-sha
+      "f"            #'gitq-results-toggle-fold
+      "F"            #'gitq-results-toggle-fold-all
+      (kbd "<backtab>") #'gitq-results-toggle-fold-all
+      "q"            #'quit-window)))
 
 (define-derived-mode gitq-results-mode special-mode "GitQ"
   "Major mode for displaying gitq pipeline results."

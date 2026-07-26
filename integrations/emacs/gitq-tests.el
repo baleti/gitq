@@ -205,6 +205,23 @@ in one shared buffer, since it re-renders per keystroke."
           (should (equal (gitq--frame-index-at (point)) 0)))
       (kill-buffer buf))))
 
+(ert-deftest gitq-test-motion-keys-reach-entry-movement ()
+  "The movement keys must actually resolve to entry movement.
+Binding them in the major-mode map is not enough under evil: `j', `k' and
+the arrows live in evil's motion-state map, which is consulted first, so
+the keys were bound and `evil-next-line' ran anyway."
+  (with-temp-buffer
+    (gitq-results-mode)
+    (when (fboundp 'evil-motion-state) (evil-motion-state))
+    (dolist (k '("j" "n"))
+      (should (eq (key-binding k) 'gitq-results-next-entry)))
+    (dolist (k '("k" "p"))
+      (should (eq (key-binding k) 'gitq-results-previous-entry)))
+    (should (eq (key-binding [down]) 'gitq-results-next-entry))
+    (should (eq (key-binding [up]) 'gitq-results-previous-entry))
+    ;; and the actions are not swallowed either
+    (should (eq (key-binding (kbd "TAB")) 'gitq-results-refine))))
+
 (ert-deftest gitq-test-rows-in-region ()
   "A frame counts as covered when the region touches any part of it."
   (let ((buf (gitq-tests--framed-buffer)))
