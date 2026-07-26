@@ -723,7 +723,17 @@ impl CompleterState {
     fn mark_selection(&mut self) {
         match self.visual_range() {
             Some((lo, hi)) => {
-                self.marked.extend(lo..=hi);
+                // toggle, matching what space does to a single row: a range
+                // already marked in full comes off, anything else goes on.
+                // Adding unconditionally meant a range could only be undone
+                // row by row, which is not what a toggle key should do.
+                if (lo..=hi).all(|i| self.marked.contains(&i)) {
+                    for i in lo..=hi {
+                        self.marked.remove(&i);
+                    }
+                } else {
+                    self.marked.extend(lo..=hi);
+                }
                 self.visual_from = None;
             }
             None => {
@@ -1840,6 +1850,36 @@ mod tests {
             st.handle(KeyCode::Char(' '), KeyModifiers::NONE);
         }
         assert_eq!(st.selection_step().as_deref(), Some("[0..3,5,8]"));
+    }
+
+    #[test]
+    fn space_over_an_already_marked_range_unmarks_it() {
+        let mut st = previewing(8);
+        st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
+        down(&mut st, 2);
+        st.handle(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(st.selection_step().as_deref(), Some("[0..3]"));
+
+        // select the same range again and toggle it off
+        st.preview_sel = 0;
+        st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
+        down(&mut st, 2);
+        st.handle(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(st.marked.is_empty(), "range stayed marked: {:?}", st.marked);
+    }
+
+    #[test]
+    fn space_over_a_partly_marked_range_marks_all_of_it() {
+        // only a fully marked range comes off; a partial one fills in, so a
+        // sloppy overlap adds rather than punching holes
+        let mut st = previewing(8);
+        st.preview_sel = 1;
+        st.handle(KeyCode::Char(' '), KeyModifiers::NONE); // mark row 1 only
+        st.preview_sel = 0;
+        st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
+        down(&mut st, 2);
+        st.handle(KeyCode::Char(' '), KeyModifiers::NONE);
+        assert_eq!(st.selection_step().as_deref(), Some("[0..3]"));
     }
 
     #[test]
