@@ -11,13 +11,16 @@ pub struct Pipeline {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
-    /// Optional revision range (`commits in main..HEAD`).
     Commits(Option<String>),
     Branches,
     Tags,
     Refs,
     Worktrees,
     Blobs,
+    /// Every hunk of every commit — the same frames `commits via diff.hunks`
+    /// produces, as a source, because searching hunks is the common case and
+    /// commits are usually the filter rather than the subject.
+    Hunks,
     /// `HEAD`, a branch, tag, or SHA — resolves to one commit.
     Ref(String),
 }

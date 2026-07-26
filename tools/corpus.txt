@@ -23,9 +23,9 @@ q tags
 q refs
 q blobs
 ~q worktrees
-q commits where refspec main..feature
-q commits where refspec v1..HEAD
-q commits where refspec HEAD~3..HEAD
+q commits where revspec main..feature
+q commits where revspec v1..HEAD
+q commits where revspec HEAD~3..HEAD
 
 # --- morphisms -----------------------------------------------------------
 q HEAD via parent
@@ -113,8 +113,8 @@ q commits pickaxe needle via diff.lines where content needle
 ~q commits via diff.lines where sign -
 
 # --- mid-pipeline in ------------------------------------------------------
-q commits where refspec main..feature /count
-q HEAD via parent* where refspec v1..HEAD
+q commits where revspec main..feature /count
+q HEAD via parent* where revspec v1..HEAD
 
 # --- terminals (read-only only; effectful ones would mutate the fixture) --
 q commits /show
@@ -181,3 +181,6 @@ c commits where date
 ~c commits where date within
 c branches where
 c worktrees where
+q hunks /count
+q hunks where content "popup" /count
+q hunks where content "popup", revspec HEAD~20..HEAD /count

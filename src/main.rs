@@ -24,7 +24,7 @@ Usage: gitq [--sexp] [--preview] <pipeline>
 Examples:
   gitq 'commits [0..10]'
   gitq 'commits where author alice /show'
-  gitq 'commits where refspec main..HEAD /count'
+  gitq 'commits where revspec main..HEAD /count'
   gitq 'HEAD via parent* where message \"fix\"'
   gitq 'commits pickaxe \"needle\" via diff.lines where content \"needle\"'
 
