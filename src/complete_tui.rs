@@ -1185,16 +1185,36 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                 } else {
                     (" ", dim)
                 };
-                let line = Line::from(vec![
-                    Span::styled(glyph, style),
-                    Span::raw(" "),
-                    Span::raw(render_frame_line(fr)),
-                ]);
-                ListItem::new(if in_visual {
-                    line.style(Style::default().bg(Color::Rgb(40, 50, 60)))
-                } else {
-                    line
-                })
+                // A frame is not always one line: a hunk renders as a header
+                // plus its body, and stuffing that into a single Span dropped
+                // the newlines and flattened the hunk into an unreadable
+                // smear.  One Line per row keeps it as it reads unfocused,
+                // and a multi-row ListItem makes the selection move across
+                // whole frames rather than rows.
+                let text = render_frame_line(fr);
+                let mut rows: Vec<Line> = text
+                    .lines()
+                    .enumerate()
+                    .map(|(n, raw)| {
+                        // the gutter marks the frame, so only its first row
+                        let g = if n == 0 { glyph } else { " " };
+                        let line = Line::from(vec![
+                            Span::styled(g, style),
+                            Span::raw(" "),
+                            Span::raw(raw.to_string()),
+                        ]);
+                        if in_visual {
+                            line.style(Style::default().bg(Color::Rgb(40, 50, 60)))
+                        } else {
+                            line
+                        }
+                    })
+                    .collect();
+                // a frame that renders to nothing still needs a row to sit on
+                if rows.is_empty() {
+                    rows.push(Line::from(" "));
+                }
+                ListItem::new(rows)
             })
             .collect();
         let mut ls = ListState::default();
