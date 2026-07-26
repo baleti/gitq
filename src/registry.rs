@@ -184,6 +184,7 @@ pub fn source_fields(src: &Source) -> &'static [&'static str] {
         Source::Branches | Source::Tags | Source::Refs => REF_FIELDS,
         Source::Worktrees => WORKTREE_FIELDS,
         Source::Blobs => BLOB_FIELDS,
+        Source::Hunks => HUNK_FIELDS,
     }
 }
 
@@ -379,6 +380,7 @@ pub const COMPLETE_SOURCE_KEYWORDS: &[&str] = &[
     "refs",
     "worktrees",
     "blobs",
+    "hunks",
     "HEAD",
 ];
 
@@ -451,7 +453,7 @@ pub fn describe_token(tok: &str) -> Option<&'static str> {
         "worktrees" => "linked worktrees",
         "blobs" => "blob/tree entries under HEAD's tree",
         "HEAD" => "the current commit",
-        "refspec" => "keep only commits in a git range, e.g. main..HEAD",
+        "revspec" => "keep only commits in a git range, e.g. main..HEAD",
         // steps
         "via" => "traverse a morphism (parent, tree, diff, ...)",
         "where" => "filter by field conditions",

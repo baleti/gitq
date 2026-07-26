@@ -178,7 +178,7 @@ pub fn parse_commit_line(line: &str) -> Option<Frame> {
 /// The range is split on whitespace and passed as separate arguments, the
 /// way git expects: `main ^v0.6.0` is two revisions, not one revision named
 /// "main ^v0.6.0".  Passing it whole made git reject it and the failure was
-/// swallowed, so `where refspec main ^v0.6.0` answered 0 where git answers 75 —
+/// swallowed, so `where revspec main ^v0.6.0` answered 0 where git answers 75 —
 /// a wrong answer delivered confidently, which is the class this language
 /// exists to prevent.
 ///

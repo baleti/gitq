@@ -58,7 +58,7 @@ be).  Date operators: =after=, =before=, =within "N days/weeks/months/years"=.
 * Revision ranges
 
 #+begin_example
-  $ gitq 'commits where refspec main~3..main /count'
+  $ gitq 'commits where revspec main~3..main /count'
   3
 #+end_example
 
@@ -70,10 +70,10 @@ transformed — and the revspec reaches =git rev-list= verbatim, so
 =^excluded=, =--not=, =HEAD^=, =HEAD~3= and multiple revs all work:
 
 #+begin_example
-  $ gitq 'commits where refspec v0.4.0..v0.5.0 /count'
+  $ gitq 'commits where revspec v0.4.0..v0.5.0 /count'
   1
 
-  $ gitq 'commits via parent* where refspec v0.4.0..v0.5.0'   # after a traversal
+  $ gitq 'commits via parent* where revspec v0.4.0..v0.5.0'   # after a traversal
   6c1e51f3  claude                2026-07-11  feat(gitq): context step (grep -C for hunks); TAB folding in results buffer
 #+end_example
 

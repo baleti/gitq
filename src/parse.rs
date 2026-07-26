@@ -210,6 +210,7 @@ pub fn parse_source(toks: &[Token]) -> P<(Source, &[Token])> {
         "tags" => (Source::Tags, rest),
         "worktrees" | "worktree" => (Source::Worktrees, rest),
         "blobs" => (Source::Blobs, rest),
+        "hunks" => (Source::Hunks, rest),
         "refs" => (Source::Refs, rest),
         _ => (Source::Ref(kw.display()), rest),
     })
@@ -250,7 +251,7 @@ pub fn parse_step<'a>(
             let (conds, ranges, rest) = parse_where(toks, &f)?;
             if !ranges.is_empty() && !f.iter().any(|x| x == "sha" || x == "commit-sha") {
                 return perr(format!(
-                    "gitq: 'refspec' needs a 'sha' or 'commit-sha' field, but the current frame only has: {}",
+                    "gitq: 'revspec' needs a 'sha' or 'commit-sha' field, but the current frame only has: {}",
                     list(&f)
                 ));
             }
@@ -267,7 +268,7 @@ pub fn parse_step<'a>(
                     "gitq: 'where' requires at least one condition, got {got}"
                 ));
             }
-            // A refspec is not a field comparison, so it cannot be a `Cond`;
+            // A revspec is not a field comparison, so it cannot be a `Cond`;
             // it compiles to the same range restriction `in` produces.  That
             // is why `where` can emit more than one step.
             let mut steps = Vec::new();
@@ -460,14 +461,14 @@ pub fn parse_where_value(tok: &Token) -> Value {
 /// The pseudo-field naming a git revision range inside `where`.
 ///
 /// Not a real field: it is not read off a frame, and so cannot be sorted or
-/// picked — `sort refspec` and `pick refspec` reject it with the frame's
+/// picked — `sort revspec` and `pick revspec` reject it with the frame's
 /// actual field list, which is the intended behaviour rather than an
 /// oversight.  It lives in `where` because it filters, and filtering is what
 /// `where` is for.
-pub const REFSPEC_FIELD: &str = "refspec";
+pub const REVSPEC_FIELD: &str = "revspec";
 
 fn is_where_field(t: Option<&Token>, fields: &[String]) -> bool {
-    is_field(t, fields) || t.is_some_and(|t| t.text() == REFSPEC_FIELD)
+    is_field(t, fields) || t.is_some_and(|t| t.text() == REVSPEC_FIELD)
 }
 
 fn parse_where<'a>(
@@ -501,7 +502,7 @@ fn parse_where<'a>(
             return Ok((acc, ranges, rest));
         }
         let field_tok = rest[0].text().to_string();
-        if field_tok == REFSPEC_FIELD {
+        if field_tok == REVSPEC_FIELD {
             // The range runs to the next comma or stage boundary, and is
             // space-joined: `main ^v0.6.0` is two arguments to git.
             let after = &rest[1..];
@@ -511,7 +512,7 @@ fn parse_where<'a>(
                 .unwrap_or(after.len());
             if end == 0 {
                 return perr(
-                    "gitq: 'refspec' requires a revision range, e.g. where refspec main..HEAD",
+                    "gitq: 'revspec' requires a revision range, e.g. where revspec main..HEAD",
                 );
             }
             ranges.push(
@@ -1336,51 +1337,77 @@ mod tests {
     }
 
     #[test]
-    fn where_refspec_compiles_to_a_range_restriction() {
-        // not a Cond: a refspec is not a field comparison, so `where` emits
+    fn hunks_is_a_source_with_hunk_shape() {
+        let p = ok("hunks");
+        assert_eq!(p.source, Source::Hunks);
+        // the same shape `commits via diff.hunks` yields, so steps that work
+        // on one work on the other
+        assert_eq!(
+            crate::registry::source_fields(&p.source),
+            crate::registry::HUNK_FIELDS
+        );
+        // and the via form still reaches the same shape
+        let via = ok("commits via diff.hunks");
+        assert!(matches!(via.steps[0], Step::Via(_)));
+    }
+
+    #[test]
+    fn hunks_take_the_steps_their_fields_allow() {
+        // content and the commit fields a hunk carries
+        assert!(p(r#"hunks where content "popup""#).is_ok());
+        assert!(p("hunks where author claude").is_ok());
+        assert!(p("hunks where revspec HEAD~3..HEAD").is_ok());
+        assert!(p("hunks sort -date").is_ok());
+        // and not the ones it has no field for
+        err("hunks where tree x", "not valid here after 'where'");
+    }
+
+    #[test]
+    fn where_revspec_compiles_to_a_range_restriction() {
+        // not a Cond: a revspec is not a field comparison, so `where` emits
         // the same step `in` does
-        let p = ok("commits where refspec main..HEAD");
+        let p = ok("commits where revspec main..HEAD");
         assert_eq!(p.steps, vec![Step::InRange("main..HEAD".into())]);
     }
 
     #[test]
-    fn where_mixes_conditions_and_a_refspec_into_two_steps() {
-        let p = ok("commits where author alice, refspec main..HEAD");
+    fn where_mixes_conditions_and_a_revspec_into_two_steps() {
+        let p = ok("commits where author alice, revspec main..HEAD");
         assert_eq!(p.steps.len(), 2);
         assert!(matches!(p.steps[0], Step::Where(_)));
         assert_eq!(p.steps[1], Step::InRange("main..HEAD".into()));
     }
 
     #[test]
-    fn a_refspec_keeps_its_spaces_and_stops_at_a_comma() {
-        let p = ok("commits where refspec main ^v0.6.0");
+    fn a_revspec_keeps_its_spaces_and_stops_at_a_comma() {
+        let p = ok("commits where revspec main ^v0.6.0");
         assert_eq!(p.steps, vec![Step::InRange("main ^v0.6.0".into())]);
-        let p = ok("commits where refspec main..HEAD, author alice");
+        let p = ok("commits where revspec main..HEAD, author alice");
         assert_eq!(p.steps.len(), 2);
         assert!(matches!(p.steps[0], Step::Where(_)));
         assert_eq!(p.steps[1], Step::InRange("main..HEAD".into()));
     }
 
     #[test]
-    fn refspec_is_rejected_by_sort_and_pick() {
+    fn revspec_is_rejected_by_sort_and_pick() {
         // it is not a field of any frame, and saying so with the real field
         // list is the intended behaviour, not an oversight
-        err("commits sort refspec", "not valid here after 'sort'");
-        err("commits pick refspec", "requires at least one field name");
+        err("commits sort revspec", "not valid here after 'sort'");
+        err("commits pick revspec", "requires at least one field name");
     }
 
     #[test]
-    fn a_bare_refspec_with_no_range_is_an_error() {
-        err("commits where refspec", "requires a revision range");
-        err("commits where refspec /count", "requires a revision range");
+    fn a_bare_revspec_with_no_range_is_an_error() {
+        err("commits where revspec", "requires a revision range");
+        err("commits where revspec /count", "requires a revision range");
     }
 
     #[test]
-    fn refspec_needs_a_commit_identifying_frame() {
+    fn revspec_needs_a_commit_identifying_frame() {
         // the same guard `in` uses: a frame with no sha to intersect on
         // cannot be range-restricted, and says so rather than answering empty
         err(
-            "commits via diff.hunks pick path where refspec main..HEAD",
+            "commits via diff.hunks pick path where revspec main..HEAD",
             "needs a 'sha' or 'commit-sha' field",
         );
     }
@@ -1390,7 +1417,7 @@ mod tests {
         // HEAD^, HEAD^2, HEAD^! must reach git whole rather than being split
         // at the caret
         for r in ["HEAD^..HEAD", "HEAD^^..HEAD", "HEAD~2^..HEAD", "HEAD^!"] {
-            let p = ok(&format!("commits where refspec {r}"));
+            let p = ok(&format!("commits where revspec {r}"));
             assert_eq!(p.steps, vec![Step::InRange(r.into())]);
         }
     }
@@ -1399,13 +1426,13 @@ mod tests {
     fn a_multi_rev_range_keeps_its_spaces() {
         // `main ^v0.6.0` is two arguments to git; joining them without a
         // separator asked git for one revision named `main^v0.6.0`
-        let p = ok("commits where refspec main ^v0.6.0");
+        let p = ok("commits where revspec main ^v0.6.0");
         assert_eq!(p.steps, vec![Step::InRange("main ^v0.6.0".into())]);
     }
 
     #[test]
     fn in_is_gone_and_says_so() {
-        // superseded by `where refspec`; the parser names the token it did
+        // superseded by `where revspec`; the parser names the token it did
         // not recognise rather than silently treating it as a value
         err("commits in main..HEAD", "expected step keyword");
         err("commits in", "expected step keyword");
@@ -1505,12 +1532,12 @@ mod tests {
     }
 
     #[test]
-    fn refspec_needs_a_commit_identifying_field() {
-        assert!(p("commits where refspec v1..HEAD").is_ok());
+    fn revspec_needs_a_commit_identifying_field() {
+        assert!(p("commits where revspec v1..HEAD").is_ok());
         // every source shape carries `sha` or `commit-sha`, so the only way
         // to lose it is to project it away
         err(
-            "commits pick author where refspec v1..HEAD",
+            "commits pick author where revspec v1..HEAD",
             "needs a 'sha' or 'commit-sha' field",
         );
     }
@@ -1519,12 +1546,12 @@ mod tests {
     fn revspec_vocabulary_survives_into_the_range() {
         // the tokenizer classifies --not and ^rev; the range must be
         // reassembled with them intact, since git parses the string
-        let Step::InRange(r) = &ok("commits via parent where refspec HEAD --not v1").steps[1]
+        let Step::InRange(r) = &ok("commits via parent where revspec HEAD --not v1").steps[1]
         else {
             panic!("expected InRange")
         };
         assert_eq!(r, "HEAD --not v1");
-        let Step::InRange(r) = &ok("commits via parent where refspec HEAD ^v1").steps[1] else {
+        let Step::InRange(r) = &ok("commits via parent where revspec HEAD ^v1").steps[1] else {
             panic!("expected InRange")
         };
         assert_eq!(r, "HEAD ^v1");

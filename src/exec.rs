@@ -47,6 +47,9 @@ pub fn exec_source(src: &Source) -> R<Vec<Frame>> {
         Source::Tags => fetch_tags(),
         Source::Refs => fetch_refs(),
         Source::Worktrees => fetch_worktrees(),
+        // every commit's hunks: the same frames `commits via diff.hunks`
+        // gives, so the two agree by construction
+        Source::Hunks => fetch_commits(None)?.iter().flat_map(hunks_of).collect(),
         Source::Blobs => match run_git_string(&["rev-parse", "HEAD^{tree}"]) {
             Some(tree) => fetch_blobs_at(&tree, None, None),
             None => Vec::new(),

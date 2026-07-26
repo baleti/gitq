@@ -63,19 +63,19 @@ pub fn complete_candidates(input: &str) -> Vec<String> {
     // inside pick lands here too, with the same answer)
     if last_text == Some("where") || matches!(last, Some(Token::Comma)) {
         let mut out = current_type_fields(ctx);
-        // `refspec` is offered by `where` only.  It is not a field of the
+        // `revspec` is offered by `where` only.  It is not a field of the
         // frame, so `sort`/`pick` must not suggest it — and a comma inside
         // `pick` lands here too, hence the check on the enclosing step.
         if enclosing_step(ctx).as_deref() == Some("where")
             && out.iter().any(|f| f == "sha" || f == "commit-sha")
         {
-            out.push("refspec".to_string());
+            out.push("revspec".to_string());
         }
         return out;
     }
 
-    // after `where refspec` → revision ranges
-    if last_text == Some("refspec") && enclosing_step(ctx).as_deref() == Some("where") {
+    // after `where revspec` → revision ranges
+    if last_text == Some("revspec") && enclosing_step(ctx).as_deref() == Some("where") {
         return complete_ranges();
     }
 
@@ -265,27 +265,27 @@ mod tests {
     }
 
     #[test]
-    fn refspec_is_offered_by_where_but_not_by_sort_or_pick() {
-        assert!(c("commits where ").contains(&"refspec".to_string()));
-        assert!(!c("commits sort ").contains(&"refspec".to_string()));
-        assert!(!c("commits pick ").contains(&"refspec".to_string()));
+    fn revspec_is_offered_by_where_but_not_by_sort_or_pick() {
+        assert!(c("commits where ").contains(&"revspec".to_string()));
+        assert!(!c("commits sort ").contains(&"revspec".to_string()));
+        assert!(!c("commits pick ").contains(&"revspec".to_string()));
         // nor on a frame with nothing to intersect on
-        assert!(!c("commits via diff.hunks pick path where ").contains(&"refspec".to_string()));
+        assert!(!c("commits via diff.hunks pick path where ").contains(&"revspec".to_string()));
     }
 
     #[test]
-    fn where_refspec_completes_to_ranges() {
-        let out = c("commits where refspec ");
+    fn where_revspec_completes_to_ranges() {
+        let out = c("commits where revspec ");
         if !out.is_empty() {
             assert!(out[0].contains(".."), "{:?}", &out[..out.len().min(3)]);
         }
     }
 
     #[test]
-    fn refspec_offers_ranges_before_bare_refs() {
+    fn revspec_offers_ranges_before_bare_refs() {
         // the bare ref is the degenerate revspec and reads as a no-op; the
         // range is what it is for, so it must be the visible default
-        let out = c("commits where refspec ");
+        let out = c("commits where revspec ");
         if out.is_empty() {
             return; // no refs in this checkout
         }

@@ -13,18 +13,26 @@ happen to the result.
 #+end_example
 
 A pipeline is =source [step...] [/terminal]=: a source produces typed frames
-(=commits=, =branches=, =tags=, =refs=, =worktrees=, =blobs=, =HEAD=, any
-ref), steps transform them (=via= morphism paths like
+(=commits=, =hunks=, =branches=, =tags=, =refs=, =worktrees=, =blobs=,
+=HEAD=, any ref), steps transform them (=via= morphism paths like
 =parent[0].tree.entries[Blob]= compose and type-check segment by segment;
 =where= / =sort= / =pick= / =grep= / =pickaxe= behave as their
 SQL/PRQL/jq counterparts), and a =/terminal= acts on the result (=/show=
 =/copy= =/count= =/branch-off= =/reword= =/remove= =/worktree= ...).
 
-Revision ranges are a =where= condition: =commits where refspec
+=hunks= is a source in its own right — every hunk of every commit, the same
+frames =commits via diff.hunks= gives — because searching hunks is the
+common case and commits are usually the filter rather than the subject:
+
+#+begin_example
+  gitq 'hunks where content "display-popup", revspec HEAD~20..HEAD'
+#+end_example
+
+Revision ranges are a =where= condition: =commits where revspec
 main..HEAD=.  It takes git's own revspec syntax whole — =HEAD^=, =HEAD~3=,
 =A...B=, =main ^v0.6.0= — and a range git rejects is an error, never an
-empty result.  =refspec= is the one =where= term that is not a field of the
-frame, so =sort refspec= and =pick refspec= reject it with the frame's real
+empty result.  =revspec= is the one =where= term that is not a field of the
+frame, so =sort revspec= and =pick revspec= reject it with the frame's real
 field list, and neither offers it in completion.
 
 Positional selection uses Python's slicing, written as a bracket step
