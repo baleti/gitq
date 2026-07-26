@@ -292,7 +292,7 @@ Inside tmux it runs in a =display-popup=, which is sized against the
 however small the pane it was invoked from, and being an overlay it writes
 nothing into any pane's grid or scrollback.  (Same mechanism as fzf's
 =--tmux=.)  Geometry is =GITQ_POPUP_WIDTH= / =GITQ_POPUP_HEIGHT=, default
-90%/80%.  Outside tmux it falls back to the alternate screen.  Either way
+100%/100% (full screen, as fzf does).  Outside tmux it falls back to the alternate screen.  Either way
 it draws on =/dev/tty=, and the preview never applies a terminal
 (highlighting =/remove= shows what it would touch and changes nothing).
 

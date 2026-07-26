@@ -36,7 +36,7 @@
 # Opt-outs, set before sourcing:
 #   GITQ_NO_TAB=1         leave TAB alone entirely
 #   GITQ_NO_SCROLLBACK=1  do not bind M-b / M-e
-#   GITQ_POPUP_WIDTH/HEIGHT  popup geometry (default 90%/80%)
+#   GITQ_POPUP_WIDTH/HEIGHT  popup geometry (default 100%/100%)
 
 # Guard against double-sourcing: re-running would capture our own widget as
 # the TAB fall-through and recurse.
@@ -200,17 +200,31 @@ gitq-complete-tui-widget() {
     zle -I
     # tmux's own errors (no such command on <3.2, a popup that will not fit)
     # go to stderr and would otherwise vanish, leaving TAB looking dead.
-    err=$(tmux display-popup -E -w "${GITQ_POPUP_WIDTH:-90%}" -h "${GITQ_POPUP_HEIGHT:-80%}" \
-      "gitq --complete-tui ${(q)pipeline} > ${(q)tmp}" 2>&1 >/dev/null)
+    # gitq's own stderr has to go to a file as well.  It would otherwise be
+    # written to the popup's terminal, which tmux destroys the instant gitq
+    # exits — so a gitq that fails on startup looks like a popup that flashes
+    # and vanishes, with nothing anywhere to say why.
+    local errfile=${tmp}.err
+    # `-B` drops the popup border: at 100%/100% the border otherwise costs
+    # two rows and two columns, so the completer would be smaller than the
+    # terminal it is meant to fill.  Measured: 133x55 bordered vs 135x57
+    # borderless on a 135x57 client.
+    err=$(tmux display-popup -B -E -w "${GITQ_POPUP_WIDTH:-100%}" -h "${GITQ_POPUP_HEIGHT:-100%}" \
+      "gitq --complete-tui ${(q)pipeline} > ${(q)tmp} 2> ${(q)errfile}" 2>&1 >/dev/null)
     ret=$?
     result=$(<$tmp)
-    rm -f $tmp
+    local gitq_err=; [[ -r $errfile ]] && gitq_err=$(<$errfile)
+    rm -f $tmp $errfile
     if [[ -n $err ]]; then
       zle -M "gitq: tmux popup failed: $err"
       # a popup that could not open is not a cancelled completion; fall back
       # rather than leaving the user with nothing
       result=$(gitq --complete-tui "$pipeline")
       ret=$?
+    elif [[ -z $result && -n $gitq_err ]]; then
+      # exited without choosing anything *and* said something: that is a
+      # failure, not a cancellation
+      zle -M "gitq: ${gitq_err%%$'\n'*}"
     fi
   else
     result=$(gitq --complete-tui "$pipeline")
