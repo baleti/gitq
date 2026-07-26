@@ -30,6 +30,15 @@ test:
 	@command -v zsh >/dev/null 2>&1 \
 		&& zsh tools/test-zsh-completion.zsh \
 		|| echo "(zsh not installed - skipping completion prefix tests)"
+	@# The Emacs client re-implements two specs the binary also owns
+	@# (`gitq--stats-line` / preview_stats, `gitq--selection-step` /
+	@# selection_step).  Two implementations of one spec drift silently, so
+	@# they get a suite that asserts the same answers.
+	@command -v emacs >/dev/null 2>&1 \
+		&& emacs --batch -l integrations/emacs/gitq.el \
+			-l integrations/emacs/gitq-tests.el \
+			-f ert-run-tests-batch-and-exit \
+		|| echo "(emacs not installed - skipping elisp tests)"
 
 lint:
 	$(CARGO) clippy --all-targets -- -D warnings
@@ -103,10 +112,6 @@ install-zsh:
 	@echo "the rest. Remove the fpath line and the old files:"
 	@echo "  rm -f $(XDG_DATA_HOME)/zsh/completions/{_gitq,gitq-complete.zsh,gitq-scrollback.zsh}"
 
-# Per-user bash completion: copy gitq.bash into the bash-completion
-# completions dir.  Far simpler than zsh — bash has no fpath-style
-# autodiscovery, so if the bash-completion package doesn't auto-source
-# that directory we print the one `source` line to add to ~/.bashrc.
 # Per-user bash integration.  Installed next to the zsh one, in gitq's own
 # data dir rather than the bash-completion directory: it is sourced, and it
 # does more than complete (TAB opens the TUI).
