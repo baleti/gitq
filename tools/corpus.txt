@@ -186,3 +186,5 @@ q hunks where content "popup" /count
 q hunks where content "popup", revspec HEAD~20..HEAD /count
 q hunks grep "popup" /count
 q hunks grep /pop.p/ /count
+q hunks where commit.parents-count == 2 /count
+q hunks where commit.email "baleti" /count

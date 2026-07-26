@@ -477,8 +477,22 @@ pub fn parse_where_value(tok: &Token) -> Value {
 /// `where` is for.
 pub const REVSPEC_FIELD: &str = "revspec";
 
+/// `commit.<field>` — reading a field off the commit a derived frame came
+/// from, instead of only the three (`author`, `date`, `message`) that
+/// `Frame::derived` copies onto it.
+pub const VIA_COMMIT: &str = "commit";
+
+/// Split `commit.date` into its morphism and field, if it is one.
+pub fn split_path(t: &str) -> Option<(&str, &str)> {
+    t.split_once('.')
+        .filter(|(m, f)| !m.is_empty() && !f.is_empty())
+}
+
 fn is_where_field(t: Option<&Token>, fields: &[String]) -> bool {
-    is_field(t, fields) || t.is_some_and(|t| t.text() == REVSPEC_FIELD)
+    is_field(t, fields)
+        || t.is_some_and(|t| {
+            t.text() == REVSPEC_FIELD || split_path(t.text()).is_some_and(|(m, _)| m == VIA_COMMIT)
+        })
 }
 
 fn parse_where<'a>(
@@ -512,7 +526,32 @@ fn parse_where<'a>(
             return Ok((acc, ranges, rest));
         }
         let field_tok = rest[0].text().to_string();
-        if field_tok == REVSPEC_FIELD {
+        if let Some((morph, sub)) = split_path(&field_tok) {
+            if morph != VIA_COMMIT {
+                return perr(format!(
+                    "gitq: '{morph}' is not a path you can read a field through here (only '{VIA_COMMIT}')"
+                ));
+            }
+            if !fields.iter().any(|x| x == "commit-sha") {
+                return perr(format!(
+                    "gitq: '{field_tok}' needs a 'commit-sha' field to follow, but the current frame only has: {}",
+                    list(fields)
+                ));
+            }
+            if !COMMIT_FIELDS.contains(&sub) {
+                return perr(format!(
+                    "gitq: '{sub}' is not a commit field (commits have: {})",
+                    COMMIT_FIELDS.join(", ")
+                ));
+            }
+            // type-check against the *commit's* shape, then keep the dotted
+            // name so exec knows to follow the path
+            let commit_fields = owned(COMMIT_FIELDS);
+            let (mut cond, after) = parse_condition(sub, &rest[1..], &commit_fields)?;
+            cond.field = field_tok;
+            acc.push(cond);
+            rest = after;
+        } else if field_tok == REVSPEC_FIELD {
             // The range runs to the next comma or stage boundary, and is
             // space-joined: `main ^v0.6.0` is two arguments to git.
             let after = &rest[1..];
@@ -1344,6 +1383,51 @@ mod tests {
         let e = parse_pipeline("commits nonsense").unwrap_err().to_string();
         assert!(e.contains("expected step keyword"), "{e}");
         assert!(!e.contains("quote the whole value"), "noisy hint: {e}");
+    }
+
+    #[test]
+    fn a_dotted_path_reads_a_field_off_the_owning_commit() {
+        let p = ok(r#"hunks where commit.email "a@b""#);
+        match &p.steps[0] {
+            Step::Where(cs) => {
+                assert_eq!(cs[0].field, "commit.email");
+                assert_eq!(cs[0].op, Op::Contains);
+            }
+            other => panic!("expected a where step, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dotted_path_is_typed_against_the_commit_shape() {
+        // parents-count is a number on a commit, so the number rules apply
+        assert!(p("hunks where commit.parents-count == 2").is_ok());
+        err("hunks where commit.parents-count == x", "is not a number");
+        // and date takes the date operators
+        assert!(p(r#"hunks where commit.date after "2026-01-01""#).is_ok());
+    }
+
+    #[test]
+    fn a_dotted_path_needs_something_to_follow_and_a_field_that_exists() {
+        err("hunks where commit.nosuch x", "is not a commit field");
+        // a commit has no commit-sha to follow: it *is* the commit
+        err(
+            r#"commits where commit.date after "2026-01-01""#,
+            "needs a 'commit-sha' field",
+        );
+        // only `commit` is a path today
+        err("hunks where tree.path x", "not valid here after 'where'");
+    }
+
+    #[test]
+    fn dotted_paths_mix_with_ordinary_conditions() {
+        let p = ok(r#"hunks where content "x", commit.parents-count == 2"#);
+        match &p.steps[0] {
+            Step::Where(cs) => {
+                assert_eq!(cs.len(), 2);
+                assert_eq!(cs[1].field, "commit.parents-count");
+            }
+            other => panic!("expected a where step, got {other:?}"),
+        }
     }
 
     #[test]
