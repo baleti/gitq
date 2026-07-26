@@ -287,9 +287,14 @@ the pipeline the highlighted candidate would produce on the right:
   — currently =scrollback-browse=.  Pipeline steps deliberately stay in the
   columns, where they get the preview and the =Tab= flow.
 
-Like fzf's widgets it draws on =/dev/tty= and needs no tmux, and the
-preview never applies a terminal (highlighting =/remove= shows what it
-would touch and changes nothing).
+Inside tmux it runs in a =display-popup=, which is sized against the
+*client* rather than the pane — so the completer gets the whole terminal
+however small the pane it was invoked from, and being an overlay it writes
+nothing into any pane's grid or scrollback.  (Same mechanism as fzf's
+=--tmux=.)  Geometry is =GITQ_POPUP_WIDTH= / =GITQ_POPUP_HEIGHT=, default
+90%/80%.  Outside tmux it falls back to the alternate screen.  Either way
+it draws on =/dev/tty=, and the preview never applies a terminal
+(highlighting =/remove= shows what it would touch and changes nothing).
 
 ** M-b / M-e: scrollback widgets
 

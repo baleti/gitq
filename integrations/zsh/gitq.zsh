@@ -20,7 +20,9 @@
 # What it sets up:
 #
 #   TAB   on a `gitq …` line   → gitq's columnar completer TUI, with a live
-#                                preview and an M-x command palette.
+#                                preview and an M-x command palette.  Runs in
+#                                a tmux popup when available, so it gets the
+#                                whole terminal rather than the pane.
 #         on anything else     → whatever TAB did before (fzf-tab, plain
 #                                completion, …), captured at first prompt.
 #   M-b                        → browse this pane's scrollback (needs tmux)
@@ -34,6 +36,7 @@
 # Opt-outs, set before sourcing:
 #   GITQ_NO_TAB=1         leave TAB alone entirely
 #   GITQ_NO_SCROLLBACK=1  do not bind M-b / M-e
+#   GITQ_POPUP_WIDTH/HEIGHT  popup geometry (default 90%/80%)
 
 # Guard against double-sourcing: re-running would capture our own widget as
 # the TAB fall-through and recurse.
@@ -175,9 +178,29 @@ gitq-complete-tui-widget() {
     pipeline=${pipeline%$lead}
   fi
 
-  local result
-  result=$(gitq --complete-tui "$pipeline")
-  local ret=$?
+  # Run in a tmux popup when we can.  A popup is sized against the *client*,
+  # not the pane, so the completer gets the whole terminal however small the
+  # pane it was invoked from — and being an overlay it writes nothing into any
+  # pane's grid or scrollback (measured; an inline UI cannot promise that,
+  # since rows that scroll off during drawing are committed to history before
+  # anything can erase them).
+  #
+  # This mirrors what fzf's own `--tmux` does for ^R.  stdout has to come back
+  # through a file: the popup runs its command in a separate pane, so the
+  # widget cannot read its stdout directly.  `-E` closes the popup when gitq
+  # exits and propagates its exit status.
+  local result ret tmp
+  if [[ -n $TMUX ]] && (( $+commands[tmux] )); then
+    tmp=$(mktemp "${TMPDIR:-/tmp}/gitq-tui.XXXXXX") || return
+    tmux display-popup -E -w "${GITQ_POPUP_WIDTH:-90%}" -h "${GITQ_POPUP_HEIGHT:-80%}" \
+      "gitq --complete-tui ${(q)pipeline} > ${(q)tmp}"
+    ret=$?
+    result=$(<$tmp)
+    rm -f $tmp
+  else
+    result=$(gitq --complete-tui "$pipeline")
+    ret=$?
+  fi
 
   # exit 0 with output = accepted; anything else = cancelled (or an M-x
   # command ran), so leave the line as the user left it.
