@@ -162,6 +162,16 @@ Signals a `user-error' with the CLI's message on failure."
     (define-key m (kbd "b")   #'gitq-results-branch-off)
     (define-key m (kbd "c")   #'gitq-results-copy-sha)
     (define-key m (kbd "q")   #'quit-window)
+    ;; movement is by entry, not by line: a hunk is one result however many
+    ;; rows its body occupies, matching how j/k behave in the terminal TUI
+    (define-key m (kbd "n")        #'gitq-results-next-entry)
+    (define-key m (kbd "p")        #'gitq-results-previous-entry)
+    (define-key m (kbd "j")        #'gitq-results-next-entry)
+    (define-key m (kbd "k")        #'gitq-results-previous-entry)
+    (define-key m (kbd "<down>")   #'gitq-results-next-entry)
+    (define-key m (kbd "<up>")     #'gitq-results-previous-entry)
+    (define-key m (kbd "C-n")      #'gitq-results-next-entry)
+    (define-key m (kbd "C-p")      #'gitq-results-previous-entry)
     ;; TAB continues the query from the object at point; `.' is its
     ;; fallback for setups where evil owns TAB (in terminals TAB = C-i).
     (define-key m (kbd "TAB")       #'gitq-results-refine)
@@ -282,6 +292,49 @@ values are matched literally; /regex/ literals as regexps."
   (or (plist-get frame :commit-sha)
       (plist-get frame :sha)))
 
+(defun gitq--stats-line (frames)
+  "A one-line summary of FRAMES, by shape.
+The same facts the terminal completer shows above its preview: a count
+alone does not distinguish 853 hunks across 4 files from 853 across 200,
+and narrowing towards one of those is usually why the query is being
+edited."
+  (when frames
+    (let* ((n (length frames))
+           (type (plist-get (car frames) :type))
+           (distinct (lambda (key)
+                       (length (delete-dups
+                                (delq nil (mapcar (lambda (f) (plist-get f key))
+                                                  frames))))))
+           (plural (lambda (k one)
+                     (format "%d %s%s" k one (if (= k 1) "" "s"))))
+           parts)
+      (pcase type
+        ((or 'hunk 'diff-line 'line)
+         (push (funcall plural n (if (eq type 'hunk) "hunk" "line")) parts)
+         (push (funcall plural (funcall distinct :path) "file") parts)
+         (let ((c (funcall distinct :commit-sha)))
+           (when (> c 0) (push (funcall plural c "commit") parts)))
+         (let ((add 0) (del 0))
+           (dolist (f frames)
+             (dolist (l (split-string (or (plist-get f :content) "") "\n"))
+               (pcase (and (> (length l) 0) (aref l 0))
+                 (?+ (setq add (1+ add)))
+                 (?- (setq del (1+ del))))))
+           (when (> (+ add del) 0)
+             (push (format "+%d -%d" add del) parts))))
+        ('commit
+         (push (funcall plural n "commit") parts)
+         (push (funcall plural (funcall distinct :author) "author") parts)
+         (let* ((dates (sort (delq nil (mapcar (lambda (f) (plist-get f :date)) frames))
+                             #'string<))
+                (day (lambda (d) (substring d 0 (min 10 (length d))))))
+           (when dates
+             (let ((a (funcall day (car dates)))
+                   (b (funcall day (car (last dates)))))
+               (push (if (equal a b) a (format "%s..%s" a b)) parts)))))
+        (_ (push (funcall plural n "result") parts)))
+      (mapconcat #'identity (nreverse parts) "  \u00b7  "))))
+
 (defun gitq--insert-frame (frame)
   "Insert a human-readable line for FRAME into the current buffer."
   (let ((type  (plist-get frame :type))
@@ -344,6 +397,8 @@ values are matched literally; /regex/ literals as regexps."
                                  (pcase (and (> (length line) 0) (aref line 0))
                                    (?+ 'diff-added)
                                    (?- 'diff-removed)
+                                   ;; the @@ range header, as the TUI colours it
+                                   (?@ (gitq--face 'diff-hunk-header 'font-lock-comment-face))
                                    (_  'default))))))
          ;; foldable body: TAB anywhere on the hunk toggles it (the
          ;; property spans the whole hunk so point can be on any line)
@@ -384,8 +439,10 @@ by the live preview)."
           (gitq--active-highlights (gitq--highlight-regexps pipeline-str))
           (last-group-sha nil))
       (erase-buffer)
-      (insert (propertize (format "gitq: %s\n\n" pipeline-str)
+      (insert (propertize (format "gitq: %s\n" pipeline-str)
                           'face 'font-lock-comment-face))
+      (let ((stats (gitq--stats-line frames)))
+        (insert (if stats (propertize (concat stats "\n\n") 'face 'shadow) "\n")))
       (if frames
           (dolist (f frames)
             ;; commit header when a hunk/diff-line group changes commit
@@ -1010,6 +1067,38 @@ readable, editable and re-runnable."
                          (nreverse runs) ",")
               "]"))))
 
+(defun gitq--frame-index-at (pos)
+  "Index of the result frame containing POS, or nil."
+  (let ((starts (gitq--frame-starts))
+        (i 0) (found nil))
+    (dolist (start starts)
+      (let ((stop (or (next-single-property-change start 'gitq-frame)
+                      (point-max))))
+        (when (and (null found) (>= pos start) (< pos stop))
+          (setq found i)))
+      (setq i (1+ i)))
+    found))
+
+(defun gitq-results-next-entry (&optional n)
+  "Move to the start of the Nth next result frame.
+Movement is by *entry*, not by screen line: a hunk is one result however
+many lines its body takes, so stepping through results should not require
+counting rows of diff.  With no next entry, point stays put rather than
+drifting into the gap between them."
+  (interactive "p" gitq-results-mode)
+  (let ((n (or n 1)))
+    (dotimes (_ (abs n))
+      (let* ((starts (gitq--frame-starts))
+             (target (if (> n 0)
+                         (seq-find (lambda (s) (> s (point))) starts)
+                       (car (last (seq-filter (lambda (s) (< s (point))) starts))))))
+        (when target (goto-char target))))))
+
+(defun gitq-results-previous-entry (&optional n)
+  "Move to the start of the Nth previous result frame."
+  (interactive "p" gitq-results-mode)
+  (gitq-results-next-entry (- (or n 1))))
+
 (defun gitq-results-refine ()
   "Continue the query from the object under point, with completion.
 The minibuffer offers the moves that make sense /here/: the morphisms
@@ -1032,8 +1121,8 @@ whole query is refined instead of a single object."
   (gitq--ensure-executable)
   (let* ((rows  (and (use-region-p)
                      (gitq--rows-in-region (region-beginning) (region-end))))
-         (frame (or (get-text-property (point) 'gitq-frame)
-                    (get-text-property (line-beginning-position) 'gitq-frame)))
+         ;; `sha' is the group-header fallback: a header line carries the
+         ;; commit that heads the group but no frame of its own.
          (sha   (or (get-text-property (point) 'gitq-sha)
                     (get-text-property (line-beginning-position) 'gitq-sha)))
          ;; An active region refines *all* the rows it covers, as a
@@ -1042,11 +1131,18 @@ whole query is refined instead of a single object."
          ;; cannot be identified by field equality at all when the shape is a
          ;; hunk or a diff line, whose identity is compound.  Position is the
          ;; one handle that works for every frame shape.
+         ;; One row or many, the answer is positional.  Re-deriving a single
+         ;; frame by identity produced
+         ;;   SHA via diff.hunks where path == ".bashrc", start-line == 20
+         ;; where `[7]` says the same thing -- and it breaks outright when a
+         ;; frame lacks a field the anchor pins on.  Position keeps the shape
+         ;; just as well, so `via history` still works after it.
+         (rows  (or rows
+                    (let ((i (gitq--frame-index-at (point)))) (and i (list i)))))
          (base  (or (and rows
                          (concat (gitq--pipeline-without-terminal
                                   gitq--buffer-pipeline)
                                  " " (gitq--selection-step rows)))
-                    (and frame (gitq--frame-anchor frame gitq--buffer-pipeline))
                     sha
                     (gitq--pipeline-without-terminal gitq--buffer-pipeline))))
     ;; the region has been consumed; leaving it active would make the next
