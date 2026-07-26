@@ -817,6 +817,29 @@ fn event_loop(
 
 // --- drawing -------------------------------------------------------------
 
+/// Which columns fit, right-aligned, and how wide each is drawn.
+///
+/// Returns the index of the leftmost column to show and its width, then one
+/// per column after it.  Taken from the right so the *active* column — the
+/// one being typed into — is never the one dropped, and always keeping at
+/// least one even when it cannot fit, since showing no candidates at all is
+/// worse than a cramped column.
+fn fit_columns(naturals: &[u16], avail: u16, preview_min: u16) -> (usize, Vec<u16>) {
+    let mut widths: Vec<u16> = Vec::new();
+    let mut used = 0u16;
+    let mut start = naturals.len();
+    for &w in naturals.iter().rev() {
+        if !widths.is_empty() && used + w + preview_min > avail {
+            break;
+        }
+        used += w;
+        widths.push(w);
+        start -= 1;
+    }
+    widths.reverse();
+    (start, widths)
+}
+
 fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
     let dim = Style::default().fg(Color::DarkGray);
     let sel = Style::default().add_modifier(Modifier::REVERSED);
@@ -844,15 +867,33 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
     ]);
     f.render_widget(Paragraph::new(prompt), rows[0]);
 
-    // body: the rightmost columns that fit, then the preview
-    let col_w = 24u16;
+    // body: the rightmost columns that fit, then the preview.
+    //
+    // Each column is sized to its own longest entry rather than to a shared
+    // constant, because the constant clipped: morphism names like
+    // `tree.entries[Blob]` are half again the width of a step keyword, and a
+    // candidate you cannot read is worse than a narrower preview.
     let preview_min = 30u16;
-    let max_cols = ((rows[1].width.saturating_sub(preview_min)) / col_w).max(1) as usize;
-    let start = st.columns.len().saturating_sub(max_cols);
+    let avail = rows[1].width;
+    // one cell for the highlight symbol, one between name and kind, one of
+    // right padding so text never abuts the border
+    let natural = |col: &Column| -> u16 {
+        col.filtered
+            .iter()
+            .map(|&j| {
+                let c = &col.all[j];
+                c.text.chars().count() + c.kind.chars().count() + 3
+            })
+            .max()
+            .unwrap_or(12)
+            .min(avail.saturating_sub(preview_min).max(12) as usize) as u16
+    };
+
+    let naturals: Vec<u16> = st.columns.iter().map(natural).collect();
+    let (start, widths) = fit_columns(&naturals, avail, preview_min);
     let shown = &st.columns[start..];
 
-    let mut constraints: Vec<Constraint> =
-        shown.iter().map(|_| Constraint::Length(col_w)).collect();
+    let mut constraints: Vec<Constraint> = widths.iter().map(|&w| Constraint::Length(w)).collect();
     constraints.push(Constraint::Min(10));
     let cells = Layout::horizontal(constraints).split(rows[1]);
 
@@ -1252,6 +1293,46 @@ mod tests {
         st.frames.clear();
         st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
         assert_eq!(st.focus, Focus::Columns);
+    }
+
+    // --- column widths ----------------------------------------------------
+
+    #[test]
+    fn columns_are_sized_individually_not_to_a_shared_constant() {
+        let (start, widths) = fit_columns(&[12, 31, 18], 120, 30);
+        assert_eq!(start, 0);
+        assert_eq!(
+            widths,
+            vec![12, 31, 18],
+            "a column was clipped to a constant"
+        );
+    }
+
+    #[test]
+    fn columns_are_dropped_from_the_left_when_they_stop_fitting() {
+        // 40+40+40 + 30 preview > 100, so the leftmost goes first and the
+        // active (rightmost) column always survives
+        let (start, widths) = fit_columns(&[40, 40, 40], 100, 30);
+        assert_eq!(start, 2);
+        assert_eq!(widths, vec![40]);
+    }
+
+    #[test]
+    fn one_column_is_kept_even_when_it_cannot_fit() {
+        // showing no candidates at all is worse than a cramped column
+        let (start, widths) = fit_columns(&[80], 40, 30);
+        assert_eq!(start, 0);
+        assert_eq!(widths.len(), 1);
+    }
+
+    #[test]
+    fn the_preview_keeps_its_minimum_when_columns_would_crowd_it() {
+        let (_, widths) = fit_columns(&[20, 20, 20, 20], 100, 30);
+        let used: u16 = widths.iter().sum();
+        assert!(
+            used + 30 <= 100 || widths.len() == 1,
+            "columns crowded the preview out: {widths:?}"
+        );
     }
 
     // --- visual selection in the preview ----------------------------------
