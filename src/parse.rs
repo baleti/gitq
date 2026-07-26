@@ -214,7 +214,20 @@ pub fn parse_source(toks: &[Token]) -> P<(Source, &[Token])> {
                     .iter()
                     .position(|t| t.is_boundary())
                     .unwrap_or(after.len());
-                let range: String = after[..end].iter().map(Token::display).collect();
+                // joined with spaces: the revspec is a list of arguments to
+                // git (`main ^v0.6.0` is two revisions), and concatenating
+                // them produced the single nonexistent revision
+                // `main^v0.6.0`
+                let range: String = after[..end]
+                    .iter()
+                    .map(Token::display)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if range.is_empty() {
+                    return perr(
+                        "gitq: 'in' requires a revision range, e.g. commits in main..HEAD",
+                    );
+                }
                 (Source::Commits(Some(range)), &after[end..])
             } else {
                 (Source::Commits(None), rest)
@@ -1320,6 +1333,38 @@ mod tests {
         let e = parse_pipeline("commits nonsense").unwrap_err().to_string();
         assert!(e.contains("expected step keyword"), "{e}");
         assert!(!e.contains("quote the whole value"), "noisy hint: {e}");
+    }
+
+    #[test]
+    fn revspec_punctuation_survives_tokenizing() {
+        // HEAD^, HEAD^2, HEAD^! must reach git whole rather than being split
+        // at the caret
+        for r in ["HEAD^..HEAD", "HEAD^^..HEAD", "HEAD~2^..HEAD", "HEAD^!"] {
+            let p = ok(&format!("commits in {r}"));
+            match &p.source {
+                Source::Commits(Some(got)) => assert_eq!(got, r),
+                other => panic!("expected a ranged commits source, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_multi_rev_range_keeps_its_spaces() {
+        // `main ^v0.6.0` is two arguments to git; joining them without a
+        // separator asked git for one revision named `main^v0.6.0`
+        let p = ok("commits in main ^v0.6.0");
+        match &p.source {
+            Source::Commits(Some(got)) => assert_eq!(got, "main ^v0.6.0"),
+            other => panic!("expected a ranged commits source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bare_in_with_no_range_is_an_error() {
+        // it used to fall through to an empty range, which ran as plain
+        // `git log` and answered "all commits" to a query that named none
+        err("commits in", "requires a revision range");
+        err("commits in /count", "requires a revision range");
     }
 
     #[test]

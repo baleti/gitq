@@ -122,6 +122,12 @@ impl std::fmt::Display for TokenizeError {
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric()
         || matches!(c, '-' | '_' | '/' | '~' | '@' | '{' | '}' | '.' | '*' | '+' | '[' | ']')
+        // '^' and '!' continue a word so git revspecs survive whole:
+        // HEAD^, HEAD^2, HEAD^!, HEAD~3^2.  A '^' that *starts* a token is
+        // still the exclusion form (^v1.0), because that rule is checked
+        // before this one; '!' likewise cannot swallow the `!=` operator,
+        // which is scanned earlier still.
+        || matches!(c, '^' | '!')
         // ':' carries slice selectors ([0:10], [::-1]); it also lets git
         // revspec syntax through the tokenizer untouched
         || c == ':'
@@ -413,7 +419,7 @@ mod tests {
     #[test]
     fn unusable_characters_are_an_error_not_a_silent_drop() {
         // 0.7.0 dropped every one of these on the floor.
-        for c in ['%', '&', '!', '?', ';', '(', ')', '#', '$', '='] {
+        for c in ['%', '&', '?', ';', '(', ')', '#', '$', '='] {
             let q = format!("commits where author {c}");
             assert!(
                 tokenize(&q).is_err(),

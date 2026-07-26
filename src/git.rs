@@ -173,16 +173,24 @@ pub fn parse_commit_line(line: &str) -> Option<Frame> {
 }
 
 /// Commits reachable from HEAD (or within a range) as commit frames.
-pub fn fetch_commits(range: Option<&str>) -> Vec<Frame> {
+/// Commits, optionally restricted to a revision range.
+///
+/// The range is split on whitespace and passed as separate arguments, the
+/// way git expects: `main ^v0.6.0` is two revisions, not one revision named
+/// "main ^v0.6.0".  Passing it whole made git reject it and the failure was
+/// swallowed, so `commits in main ^v0.6.0` answered 0 where git answers 75 —
+/// a wrong answer delivered confidently, which is the class this language
+/// exists to prevent.
+///
+/// A range git rejects is therefore an error rather than an empty result.
+pub fn fetch_commits(range: Option<&str>) -> R<Vec<Frame>> {
     let fmt = format!("--format={LOG_FORMAT}");
-    let args: Vec<&str> = match range {
-        Some(r) => vec!["log", &fmt, r],
-        None => vec!["log", &fmt],
-    };
-    run_git(&args)
-        .iter()
-        .filter_map(|l| parse_commit_line(l))
-        .collect()
+    let mut args: Vec<&str> = vec!["log", &fmt];
+    if let Some(r) = range {
+        args.extend(r.split_whitespace());
+    }
+    let lines = run_git_loud(&args).map_err(|e| GitqError(format!("gitq: {e}")))?;
+    Ok(lines.iter().filter_map(|l| parse_commit_line(l)).collect())
 }
 
 /// Many commits by full SHA in a single git process, as a SHA-keyed map.
