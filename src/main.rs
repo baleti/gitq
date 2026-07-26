@@ -22,7 +22,7 @@ Usage: gitq [--sexp] [--preview] <pipeline>
        gitq --scrollback-browse [--tmux-target TARGET]
 
 Examples:
-  gitq 'commits [0:10]'
+  gitq 'commits [0..10]'
   gitq 'commits where author alice /show'
   gitq 'commits in main..HEAD /count'
   gitq 'HEAD via parent* where message \"fix\"'

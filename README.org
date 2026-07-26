@@ -6,7 +6,7 @@ composing small, typed operations, and end the pipeline with what should
 happen to the result.
 
 #+begin_example
-  gitq 'commits where author alice [0:5] /show'
+  gitq 'commits where author alice [0..5] /show'
   gitq 'HEAD via parent* where message "fix" /count'
   gitq 'commits pickaxe "some-function" first /worktree'
   gitq 'HEAD via tree.entries.history sort -date first /copy'
@@ -20,21 +20,22 @@ ref), steps transform them (=via= morphism paths like
 SQL/PRQL/jq counterparts), and a =/terminal= acts on the result (=/show=
 =/copy= =/count= =/branch-off= =/reword= =/remove= =/worktree= ...).
 
-Positional selection uses Python's slicing, written as a bracket step:
-=[0:10]= the first ten, =[-1]= the last, =[::-1]= reversed, =[::2]= every
-other one, and — beyond what Python spells — =[0:3,7,-2:]= a union of
+Positional selection uses Python's slicing, written as a bracket step
+with =..= as the separator (as in git revision ranges, not Python's =:=):
+=[0..10]= the first ten, =[..3]= the first three, =[-3..]= the last three,
+=[-1]= the last one, =[....-1]= reversed, =[....2]= every other one, and — beyond what Python spells — =[0..3,7,-2..]= a union of
 selectors, evaluated left to right.  Ranges are half-open and clamp
-(=[0:1000]= on ten results is ten results); a bare index that does not
+(=[0..1000]= on ten results is ten results); a bare index that does not
 exist is an error, as in Python.
 
 It replaces =take=, =skip=, =first= and =last=, which were each one case
 of it: =[:N]=, =[N:]=, =[0]=, =[-1]=.  Note the Python reading rather than
-a first/last one — =[3:]= is everything *after* the first three, and the
-last three is =[-3:]=.
+a first/last one — =[3..]= is everything *after* the first three, and the
+last three is =[-3..]=.
 
 Brackets are punctuation, so their reading depends on where they sit:
-whitespace ends a value, which makes =where sha regex ^5 [0:1]= a
-selection, while =regex "^5 [0:1]"= is quoted and =regex ^5[0-9]= is one
+whitespace ends a value, which makes =where sha regex ^5 [0..1]= a
+selection, while =regex "^5 [0..1]"= is quoted and =regex ^5[0-9]= is one
 token — both still character classes.  Inside a =via= path they index a
 morphism (=parent[0]=, =tree.entries[Blob]=) as they always have.
 
@@ -170,7 +171,7 @@ with the query that built it.
 
 With an active region, =TAB= refines *every* result the region touches at
 once, as a positional step on that buffer's own query — the same
-=[0:3,5]= the terminal completer emits, and the reason multi-select works
+=[0..3,5]= the terminal completer emits, and the reason multi-select works
 for hunks and diff lines, whose identity is compound and cannot be pinned
 by field equality.
 
@@ -265,7 +266,7 @@ pipeline the highlighted candidate would produce on the right:
   banks the range and leaves visual mode, so several disjoint runs can be
   gathered before acting; =m= with no range toggles the row under the
   cursor.  =↵= then acts on the whole selection, which becomes a
-  positional step on the query you are in (=commits [0:3,5:7]=) rather
+  positional step on the query you are in (=commits [0..3,5..7]=) rather
   than hidden state.
 - =^L= steps into the preview: the result frames become a selectable list,
   and =↵= (or =^L= again) *pivots* onto the highlighted one — a fresh column
