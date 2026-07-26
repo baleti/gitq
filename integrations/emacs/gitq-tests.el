@@ -222,6 +222,15 @@ the keys were bound and `evil-next-line' ran anyway."
     ;; and the actions are not swallowed either
     (should (eq (key-binding (kbd "TAB")) 'gitq-results-refine))))
 
+(ert-deftest gitq-test-movement-commands-are-evil-motions ()
+  "Entry movement must be declared a motion, or visual state ends on it.
+Evil's post-command hook exits the selection after a command without
+`:keep-visual', so in visual state the keys did nothing visible at all —
+`evil-next-line' carries the property for the same reason."
+  (skip-unless (fboundp 'evil-get-command-property))
+  (dolist (cmd '(gitq-results-next-entry gitq-results-previous-entry))
+    (should (evil-get-command-property cmd :keep-visual))))
+
 (ert-deftest gitq-test-rows-in-region ()
   "A frame counts as covered when the region touches any part of it."
   (let ((buf (gitq-tests--framed-buffer)))
