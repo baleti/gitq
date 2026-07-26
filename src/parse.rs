@@ -274,12 +274,18 @@ pub fn parse_step<'a>(
         }
 
         "where" => {
-            let (conds, rest) = parse_where(toks, &f)?;
+            let (conds, ranges, rest) = parse_where(toks, &f)?;
+            if !ranges.is_empty() && !f.iter().any(|x| x == "sha" || x == "commit-sha") {
+                return perr(format!(
+                    "gitq: 'refspec' needs a 'sha' or 'commit-sha' field, but the current frame only has: {}",
+                    list(&f)
+                ));
+            }
             // Gap fix: 0.7.0 let a condition-less `where` through as a
             // keep-everything no-op — the only step that did; pick, sort,
             // grep and skip all errored.  Silently doing nothing is exactly
             // what "fail loud" forbids.
-            if conds.is_empty() {
+            if conds.is_empty() && ranges.is_empty() {
                 let got = match toks.first() {
                     Some(t) => format!("'{}'", t.display()),
                     None => "end of input".to_string(),
@@ -288,7 +294,15 @@ pub fn parse_step<'a>(
                     "gitq: 'where' requires at least one condition, got {got}"
                 ));
             }
-            Ok((vec![Step::Where(conds)], rest, f))
+            // A refspec is not a field comparison, so it cannot be a `Cond`;
+            // it compiles to the same range restriction `in` produces.  That
+            // is why `where` can emit more than one step.
+            let mut steps = Vec::new();
+            if !conds.is_empty() {
+                steps.push(Step::Where(conds));
+            }
+            steps.extend(ranges.into_iter().map(Step::InRange));
+            Ok((steps, rest, f))
         }
 
         "grep" => {
@@ -497,9 +511,25 @@ pub fn parse_where_value(tok: &Token) -> Value {
 /// keyword: a token right after a field that isn't a recognized operator is
 /// taken directly as the value with an implicit substring condition, for
 /// field types where that's sensible.
-fn parse_where<'a>(toks: &'a [Token], fields: &[String]) -> P<(Vec<Cond>, &'a [Token])> {
+/// The pseudo-field naming a git revision range inside `where`.
+///
+/// Not a real field: it is not read off a frame, and so cannot be sorted or
+/// picked — `sort refspec` and `pick refspec` reject it with the frame's
+/// actual field list, which is the intended behaviour rather than an
+/// oversight.  It lives in `where` because it filters, and filtering is what
+/// `where` is for.
+pub const REFSPEC_FIELD: &str = "refspec";
+
+fn is_where_field(t: Option<&Token>, fields: &[String]) -> bool {
+    is_field(t, fields) || t.is_some_and(|t| t.text() == REFSPEC_FIELD)
+}
+
+fn parse_where<'a>(
+    toks: &'a [Token],
+    fields: &[String],
+) -> P<(Vec<Cond>, Vec<String>, &'a [Token])> {
     if let Some(t) = toks.first() {
-        if !is_field(Some(t), fields) && !t.is_boundary() {
+        if !is_where_field(Some(t), fields) && !t.is_boundary() {
             return perr(format!(
                 "gitq: field '{}' not valid here after 'where' (current frame has: {})",
                 t.display(),
@@ -509,6 +539,7 @@ fn parse_where<'a>(toks: &'a [Token], fields: &[String]) -> P<(Vec<Cond>, &'a [T
     }
 
     let mut acc: Vec<Cond> = Vec::new();
+    let mut ranges: Vec<String> = Vec::new();
     let mut rest = toks;
 
     loop {
@@ -520,18 +551,41 @@ fn parse_where<'a>(toks: &'a [Token], fields: &[String]) -> P<(Vec<Cond>, &'a [T
         // "*.txt"` silently returned nothing.  A comma still forces the
         // field reading (`where content x, path == "y"`), so nothing that
         // worked before stops working.
-        if !is_field(rest.first(), fields) || is_step_kw(rest.first()) {
-            return Ok((acc, rest));
+        if !is_where_field(rest.first(), fields) || is_step_kw(rest.first()) {
+            return Ok((acc, ranges, rest));
         }
         let field_tok = rest[0].text().to_string();
-        let (cond, after) = parse_condition(&field_tok, &rest[1..], fields)?;
-        acc.push(cond);
-        rest = after;
+        if field_tok == REFSPEC_FIELD {
+            // The range runs to the next comma or stage boundary, and is
+            // space-joined: `main ^v0.6.0` is two arguments to git.
+            let after = &rest[1..];
+            let end = after
+                .iter()
+                .position(|t| t.is_boundary() || matches!(t, Token::Comma))
+                .unwrap_or(after.len());
+            if end == 0 {
+                return perr(
+                    "gitq: 'refspec' requires a revision range, e.g. where refspec main..HEAD",
+                );
+            }
+            ranges.push(
+                after[..end]
+                    .iter()
+                    .map(Token::display)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+            rest = &after[end..];
+        } else {
+            let (cond, after) = parse_condition(&field_tok, &rest[1..], fields)?;
+            acc.push(cond);
+            rest = after;
+        }
 
         // a comma demands another field
         if matches!(rest.first(), Some(Token::Comma)) {
             match rest.get(1) {
-                Some(t) if is_field(Some(t), fields) => {
+                Some(t) if is_where_field(Some(t), fields) => {
                     rest = &rest[1..];
                 }
                 Some(t) => {
@@ -1333,6 +1387,56 @@ mod tests {
         let e = parse_pipeline("commits nonsense").unwrap_err().to_string();
         assert!(e.contains("expected step keyword"), "{e}");
         assert!(!e.contains("quote the whole value"), "noisy hint: {e}");
+    }
+
+    #[test]
+    fn where_refspec_compiles_to_a_range_restriction() {
+        // not a Cond: a refspec is not a field comparison, so `where` emits
+        // the same step `in` does
+        let p = ok("commits where refspec main..HEAD");
+        assert_eq!(p.steps, vec![Step::InRange("main..HEAD".into())]);
+    }
+
+    #[test]
+    fn where_mixes_conditions_and_a_refspec_into_two_steps() {
+        let p = ok("commits where author alice, refspec main..HEAD");
+        assert_eq!(p.steps.len(), 2);
+        assert!(matches!(p.steps[0], Step::Where(_)));
+        assert_eq!(p.steps[1], Step::InRange("main..HEAD".into()));
+    }
+
+    #[test]
+    fn a_refspec_keeps_its_spaces_and_stops_at_a_comma() {
+        let p = ok("commits where refspec main ^v0.6.0");
+        assert_eq!(p.steps, vec![Step::InRange("main ^v0.6.0".into())]);
+        let p = ok("commits where refspec main..HEAD, author alice");
+        assert_eq!(p.steps.len(), 2);
+        assert!(matches!(p.steps[0], Step::Where(_)));
+        assert_eq!(p.steps[1], Step::InRange("main..HEAD".into()));
+    }
+
+    #[test]
+    fn refspec_is_rejected_by_sort_and_pick() {
+        // it is not a field of any frame, and saying so with the real field
+        // list is the intended behaviour, not an oversight
+        err("commits sort refspec", "not valid here after 'sort'");
+        err("commits pick refspec", "requires at least one field name");
+    }
+
+    #[test]
+    fn a_bare_refspec_with_no_range_is_an_error() {
+        err("commits where refspec", "requires a revision range");
+        err("commits where refspec /count", "requires a revision range");
+    }
+
+    #[test]
+    fn refspec_needs_a_commit_identifying_frame() {
+        // the same guard `in` uses: a frame with no sha to intersect on
+        // cannot be range-restricted, and says so rather than answering empty
+        err(
+            "commits via diff.hunks pick path where refspec main..HEAD",
+            "needs a 'sha' or 'commit-sha' field",
+        );
     }
 
     #[test]

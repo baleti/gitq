@@ -20,6 +20,13 @@ ref), steps transform them (=via= morphism paths like
 SQL/PRQL/jq counterparts), and a =/terminal= acts on the result (=/show=
 =/copy= =/count= =/branch-off= =/reword= =/remove= =/worktree= ...).
 
+Revision ranges are a =where= condition: =commits where refspec
+main..HEAD=.  It takes git's own revspec syntax whole — =HEAD^=, =HEAD~3=,
+=A...B=, =main ^v0.6.0= — and a range git rejects is an error, never an
+empty result.  =refspec= is the one =where= term that is not a field of the
+frame, so =sort refspec= and =pick refspec= reject it with the frame's real
+field list, and neither offers it in completion.
+
 Positional selection uses Python's slicing, written as a bracket step
 with =..= as the separator (as in git revision ranges, not Python's =:=):
 =[0..10]= the first ten, =[..3]= the first three, =[-3..]= the last three,
