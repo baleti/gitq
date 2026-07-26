@@ -46,9 +46,9 @@ pub fn complete_candidates(input: &str) -> Vec<String> {
         return out;
     }
 
-    // after "in" (source modifier or mid-pipeline step) → refs
+    // after "in" (source modifier or mid-pipeline step) → ranges, then refs
     if last_text == Some("in") {
-        return complete_refs();
+        return complete_ranges();
     }
 
     // after "via" → morphisms valid for the frame type flowing in
@@ -186,6 +186,29 @@ fn current_type_fields(ctx: &[Token]) -> Vec<String> {
 }
 
 /// Local branch and tag names, for contexts expecting a ref.
+/// Candidates after `in`: `REF..HEAD` ranges first, then the bare refs.
+///
+/// A bare ref is a legal revspec, but it is the degenerate one — `in main`
+/// from a branch merged into main keeps everything and reads as a no-op,
+/// which is how `in` gets mistaken for a filter on some `branch` field.  The
+/// range is what the step is *for*, so it goes first and is visible without
+/// reading the manual.
+///
+/// Ranges are offered as `REF..HEAD` rather than every REF..REF pairing:
+/// pairings are quadratic and a repo with a few hundred refs would bury the
+/// list, while `..HEAD` is the overwhelmingly common shape.  Fuzzy filtering
+/// plus editing the tail covers the rest.
+fn complete_ranges() -> Vec<String> {
+    let refs = complete_refs();
+    let mut out: Vec<String> = refs
+        .iter()
+        .filter(|r| *r != "HEAD")
+        .map(|r| format!("{r}..HEAD"))
+        .collect();
+    out.extend(refs);
+    out
+}
+
 fn complete_refs() -> Vec<String> {
     let mut out = run_git(&["branch", "--format=%(refname:short)"]);
     out.extend(run_git(&["tag", "--list"]));
@@ -238,6 +261,23 @@ mod tests {
     #[test]
     fn empty_input_offers_sources() {
         assert_eq!(c(""), strs(COMPLETE_SOURCE_KEYWORDS));
+    }
+
+    #[test]
+    fn in_offers_ranges_before_bare_refs() {
+        // the bare ref is the degenerate revspec and reads as a no-op; the
+        // range is what the step is for, so it must be the visible default
+        let out = c("commits in ");
+        if out.is_empty() {
+            return; // no refs in this checkout
+        }
+        assert!(
+            out[0].contains(".."),
+            "a bare ref led the list: {:?}",
+            &out[..out.len().min(3)]
+        );
+        // and the plain refs are still reachable further down
+        assert!(out.iter().any(|r| !r.contains("..")));
     }
 
     #[test]
