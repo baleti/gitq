@@ -101,7 +101,7 @@ pub fn implicit_op(t: FieldType) -> Option<crate::ast::Op> {
 /// Reserved step keywords: these always start a new stage and must be
 /// quoted when used as string values.
 pub const STEP_KEYWORDS: &[&str] = &[
-    "via", "where", "grep", "pickaxe", "path", "pick", "sort", "context", "in",
+    "via", "where", "grep", "pickaxe", "path", "pick", "sort", "context",
 ];
 
 // Structural field-set typing: the exact set of fields each frame shape
@@ -451,7 +451,6 @@ pub fn describe_token(tok: &str) -> Option<&'static str> {
         "worktrees" => "linked worktrees",
         "blobs" => "blob/tree entries under HEAD's tree",
         "HEAD" => "the current commit",
-        "in" => "restrict to a revision range (source modifier or step)",
         "refspec" => "keep only commits in a git range, e.g. main..HEAD",
         // steps
         "via" => "traverse a morphism (parent, tree, diff, ...)",

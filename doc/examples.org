@@ -58,22 +58,22 @@ be).  Date operators: =after=, =before=, =within "N days/weeks/months/years"=.
 * Revision ranges
 
 #+begin_example
-  $ gitq 'commits in main~3..main /count'
+  $ gitq 'commits where refspec main~3..main /count'
   3
 #+end_example
 
 Anything =git log= accepts as a range works: =main..feature=, =HEAD~10..=,
 a single ref.
 
-=in= also works mid-pipeline, as a step restricting a stream that earlier
-steps already transformed — and there the revspec reaches =git rev-list=
-verbatim, so =^excluded=, =--not=, and multiple revs work too:
+It works mid-pipeline too, restricting a stream that earlier steps already
+transformed — and the revspec reaches =git rev-list= verbatim, so
+=^excluded=, =--not=, =HEAD^=, =HEAD~3= and multiple revs all work:
 
 #+begin_example
-  $ gitq 'commits in v0.4.0..v0.5.0 /count'          # source modifier
+  $ gitq 'commits where refspec v0.4.0..v0.5.0 /count'
   1
 
-  $ gitq 'commits via parent* in v0.4.0..v0.5.0'     # step, after a traversal
+  $ gitq 'commits via parent* where refspec v0.4.0..v0.5.0'   # after a traversal
   6c1e51f3  claude                2026-07-11  feat(gitq): context step (grep -C for hunks); TAB folding in results buffer
 #+end_example
 
