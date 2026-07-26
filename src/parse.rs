@@ -1138,7 +1138,7 @@ mod tests {
     fn selection_parses_as_a_slice_step() {
         use crate::ast::Sel;
         assert_eq!(
-            ok("commits [0:3]").steps,
+            ok("commits [0..3]").steps,
             vec![Step::Slice(vec![Sel::Range {
                 start: Some(0),
                 stop: Some(3),
@@ -1157,7 +1157,7 @@ mod tests {
         // the shape a multi-row selection emits; a bare comma would have
         // ended the token and left `[0` dangling
         assert_eq!(
-            ok("commits [0:2,4]").steps,
+            ok("commits [0..2,4]").steps,
             vec![Step::Slice(vec![
                 Sel::Range {
                     start: Some(0),
@@ -1173,7 +1173,7 @@ mod tests {
     fn brackets_after_an_unquoted_regex_are_selection_not_regex() {
         // the disambiguation rule: whitespace ends the value, so a bracket
         // token standing on its own is positional selection
-        let p = ok("commits where sha regex ^5 [0:1]");
+        let p = ok("commits where sha regex ^5 [0..1]");
         assert_eq!(p.steps.len(), 2);
         assert!(matches!(p.steps[1], Step::Slice(_)));
     }
@@ -1223,15 +1223,15 @@ mod tests {
     }
 
     #[test]
-    fn a_dash_range_is_rejected_with_a_message_naming_the_colon_form() {
-        err("commits [20-30]", "':' not '-'");
+    fn a_dash_range_is_rejected_with_a_message_naming_the_dotted_form() {
+        err("commits [20-30]", "'..' not '-'");
     }
 
     #[test]
     fn malformed_selections_fail_loud() {
         err("commits []", "empty selection");
-        err("commits [::0]", "step cannot be 0");
-        err("commits [1:2:3:4]", "start:stop:step");
+        err("commits [....0]", "step cannot be 0");
+        err("commits [1..2..3..4]", "start..stop..step");
         err("commits [abc]", "not a number");
     }
 

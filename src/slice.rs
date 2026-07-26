@@ -1,7 +1,14 @@
 //! Positional selection with Python's slice semantics.
 //!
-//! `[0:10]`, `[5]`, `[-1]`, `[::2]`, `[::-1]`, and — a gitq extension Python
-//! has no syntax for — a comma-separated union: `[0:3,7,-2:]`.
+//! `[0..10]`, `[5]`, `[-1]`, `[....2]`, `[....-1]`, and — a gitq extension
+//! Python has no syntax for — a comma-separated union: `[0..3,7,-2..]`.
+//!
+//! The separator is `..`, as in git revision ranges and Rust, rather than
+//! Python's `:`.  The cost falls on the third component: a bare step has to
+//! write both empty bounds, so "every other" is `[....2]` and "reversed" is
+//! `[....-1]`.  Those parse cleanly (`"....2".split("..")` is `["", "", "2"]`)
+//! but read poorly, and they are the one place this syntax is worse than the
+//! one it replaced.
 //!
 //! Python's rules are followed deliberately rather than approximately,
 //! because half-remembered slicing is worse than none: half-open ranges,
@@ -23,18 +30,23 @@ use crate::ast::Sel;
 /// with something that explains itself.
 pub fn parse_selectors(body: &str) -> Result<Vec<Sel>, String> {
     if body.trim().is_empty() {
-        return Err("gitq: empty selection '[]' — use '[:]' for everything".into());
+        return Err("gitq: empty selection '[]' — use '[..]' for everything".into());
     }
     body.split(',').map(|p| parse_one(p.trim())).collect()
 }
 
 fn parse_int(t: &str, whole: &str) -> Result<isize, String> {
     t.parse::<isize>().map_err(|_| {
-        // the most likely typo, given ranges read naturally with a dash
-        if t.contains('-') {
+        // the two likely spellings: a dash reads naturally as a range, and a
+        // colon is what Python (and gitq before this) used
+        if t.contains(':') {
+            let fixed = whole.replace(':', "..");
+            format!("gitq: bad selection '[{whole}]' — ranges use '..', so '[{fixed}]'")
+        } else if t.matches('-').count() > 1 || t[1..].contains('-') {
+            let fixed = t.replacen('-', "..", 1);
             format!(
-                "gitq: bad selection '[{whole}]' — ranges use ':' not '-' \
-                 (a dash is a negative index, so '[20:30]', not '[20-30]')"
+                "gitq: bad selection '[{whole}]' — ranges use '..' not '-' \
+                 (a dash is a negative index, so '[{fixed}]')"
             )
         } else {
             format!("gitq: bad selection '[{whole}]' — '{t}' is not a number")
@@ -46,14 +58,14 @@ fn parse_one(part: &str) -> Result<Sel, String> {
     if part.is_empty() {
         return Err("gitq: empty selector in '[...]'".into());
     }
-    if !part.contains(':') {
+    if !part.contains("..") {
         return Ok(Sel::Index(parse_int(part, part)?));
     }
 
-    let bits: Vec<&str> = part.split(':').collect();
+    let bits: Vec<&str> = part.split("..").collect();
     if bits.len() > 3 {
         return Err(format!(
-            "gitq: bad selection '[{part}]' — at most 'start:stop:step'"
+            "gitq: bad selection '[{part}]' — at most 'start..stop..step'"
         ));
     }
     let field = |i: usize| -> Result<Option<isize>, String> {
@@ -174,48 +186,48 @@ mod tests {
 
     #[test]
     fn ranges_are_half_open_like_python() {
-        assert_eq!(pick("0:3", 5), vec![0, 1, 2]);
-        assert_eq!(pick("1:2", 5), vec![1]);
-        assert_eq!(pick("3:3", 5), Vec::<usize>::new());
+        assert_eq!(pick("0..3", 5), vec![0, 1, 2]);
+        assert_eq!(pick("1..2", 5), vec![1]);
+        assert_eq!(pick("3..3", 5), Vec::<usize>::new());
     }
 
     #[test]
     fn omitted_bounds_mean_the_ends() {
-        assert_eq!(pick(":3", 5), vec![0, 1, 2]);
-        assert_eq!(pick("3:", 5), vec![3, 4]);
-        assert_eq!(pick(":", 3), vec![0, 1, 2]);
+        assert_eq!(pick("..3", 5), vec![0, 1, 2]);
+        assert_eq!(pick("3..", 5), vec![3, 4]);
+        assert_eq!(pick("..", 3), vec![0, 1, 2]);
     }
 
     #[test]
     fn steps_and_reversal() {
-        assert_eq!(pick("::2", 6), vec![0, 2, 4]);
-        assert_eq!(pick("1::2", 6), vec![1, 3, 5]);
-        assert_eq!(pick("::-1", 4), vec![3, 2, 1, 0]);
-        assert_eq!(pick("::-2", 5), vec![4, 2, 0]);
-        assert_eq!(pick("4:1:-1", 6), vec![4, 3, 2]);
+        assert_eq!(pick("....2", 6), vec![0, 2, 4]);
+        assert_eq!(pick("1....2", 6), vec![1, 3, 5]);
+        assert_eq!(pick("....-1", 4), vec![3, 2, 1, 0]);
+        assert_eq!(pick("....-2", 5), vec![4, 2, 0]);
+        assert_eq!(pick("4..1..-1", 6), vec![4, 3, 2]);
     }
 
     #[test]
     fn negative_bounds_inside_ranges() {
-        assert_eq!(pick("-2:", 5), vec![3, 4]);
-        assert_eq!(pick(":-2", 5), vec![0, 1, 2]);
-        assert_eq!(pick("-3:-1", 5), vec![2, 3]);
+        assert_eq!(pick("-2..", 5), vec![3, 4]);
+        assert_eq!(pick("..-2", 5), vec![0, 1, 2]);
+        assert_eq!(pick("-3..-1", 5), vec![2, 3]);
     }
 
     #[test]
     fn slice_bounds_clamp_rather_than_failing() {
         // python: [0:1000] on five items is five items
-        assert_eq!(pick("0:1000", 5), vec![0, 1, 2, 3, 4]);
-        assert_eq!(pick("-1000:2", 5), vec![0, 1]);
-        assert_eq!(pick("10:20", 5), Vec::<usize>::new());
+        assert_eq!(pick("0..1000", 5), vec![0, 1, 2, 3, 4]);
+        assert_eq!(pick("-1000..2", 5), vec![0, 1]);
+        assert_eq!(pick("10..20", 5), Vec::<usize>::new());
     }
 
     #[test]
     fn a_union_concatenates_in_the_order_written() {
-        assert_eq!(pick("0:2,4", 6), vec![0, 1, 4]);
-        assert_eq!(pick("4,0:2", 6), vec![4, 0, 1]);
+        assert_eq!(pick("0..2,4", 6), vec![0, 1, 4]);
+        assert_eq!(pick("4,0..2", 6), vec![4, 0, 1]);
         // the shape the TUI emits for a multi-row selection
-        assert_eq!(pick("1:3,5:7", 10), vec![1, 2, 5, 6]);
+        assert_eq!(pick("1..3,5..7", 10), vec![1, 2, 5, 6]);
     }
 
     #[test]
@@ -228,7 +240,7 @@ mod tests {
     fn an_out_of_range_bare_index_is_an_error_but_a_range_is_not() {
         let e = positions(&sel("9"), 5).unwrap_err();
         assert!(e.contains("out of range"), "{e}");
-        assert!(positions(&sel("9:20"), 5).is_ok());
+        assert!(positions(&sel("9..20"), 5).is_ok());
         // and it counts correctly from the other end
         assert!(positions(&sel("-6"), 5).is_err());
         assert!(positions(&sel("-5"), 5).is_ok());
@@ -237,35 +249,43 @@ mod tests {
     #[test]
     fn an_empty_selection_says_what_to_write_instead() {
         let e = parse_selectors("  ").unwrap_err();
-        assert!(e.contains("[:]"), "{e}");
+        assert!(e.contains("[..]"), "{e}");
     }
 
     #[test]
-    fn a_dash_range_is_rejected_with_the_colon_spelling() {
+    fn a_dash_range_is_rejected_with_the_dotted_spelling() {
         // the most likely typo: ranges read naturally with a dash
         let e = parse_selectors("20-30").unwrap_err();
-        assert!(e.contains("':' not '-'"), "{e}");
-        assert!(e.contains("[20:30]"), "{e}");
+        assert!(e.contains("'..' not '-'"), "{e}");
+        assert!(e.contains("[20..30]"), "{e}");
+    }
+
+    #[test]
+    fn the_old_colon_spelling_is_rejected_with_the_dotted_one() {
+        // gitq used Python's ':' before; say so rather than "not a number"
+        let e = parse_selectors("1:20").unwrap_err();
+        assert!(e.contains("ranges use '..'"), "{e}");
+        assert!(e.contains("[1..20]"), "{e}");
     }
 
     #[test]
     fn a_zero_step_is_rejected() {
-        assert!(parse_selectors("::0")
+        assert!(parse_selectors("....0")
             .unwrap_err()
             .contains("step cannot be 0"));
     }
 
     #[test]
-    fn too_many_colons_is_rejected() {
-        assert!(parse_selectors("1:2:3:4")
+    fn too_many_components_is_rejected() {
+        assert!(parse_selectors("1..2..3..4")
             .unwrap_err()
-            .contains("start:stop:step"));
+            .contains("start..stop..step"));
     }
 
     #[test]
     fn selection_over_an_empty_result_is_empty_not_a_crash() {
-        assert_eq!(pick(":", 0), Vec::<usize>::new());
-        assert_eq!(pick("::-1", 0), Vec::<usize>::new());
+        assert_eq!(pick("..", 0), Vec::<usize>::new());
+        assert_eq!(pick("....-1", 0), Vec::<usize>::new());
         assert!(positions(&sel("0"), 0).is_err());
     }
 }

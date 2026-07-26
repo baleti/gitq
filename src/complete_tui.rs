@@ -600,7 +600,7 @@ impl CompleterState {
                 if a == b {
                     a.to_string()
                 } else {
-                    format!("{a}:{}", b + 1) // half-open, as the language reads it
+                    format!("{a}..{}", b + 1) // half-open, as the language reads it
                 }
             })
             .collect();
@@ -1277,7 +1277,7 @@ mod tests {
         down(&mut st, 2);
         assert_eq!(st.visual_range(), Some((0, 2)));
         assert_eq!(st.selected_rows(), vec![0, 1, 2]);
-        assert_eq!(st.selection_step().as_deref(), Some("[0:3]"));
+        assert_eq!(st.selection_step().as_deref(), Some("[0..3]"));
     }
 
     #[test]
@@ -1288,7 +1288,7 @@ mod tests {
         st.handle(KeyCode::Char('k'), KeyModifiers::CONTROL);
         st.handle(KeyCode::Char('k'), KeyModifiers::CONTROL);
         assert_eq!(st.visual_range(), Some((2, 4)));
-        assert_eq!(st.selection_step().as_deref(), Some("[2:5]"));
+        assert_eq!(st.selection_step().as_deref(), Some("[2..5]"));
     }
 
     #[test]
@@ -1305,7 +1305,7 @@ mod tests {
         st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
         down(&mut st, 1);
         st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
-        assert_eq!(st.selection_step().as_deref(), Some("[0:2,5:7]"));
+        assert_eq!(st.selection_step().as_deref(), Some("[0..2,5..7]"));
     }
 
     #[test]
@@ -1315,7 +1315,7 @@ mod tests {
             st.preview_sel = r;
             st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
         }
-        assert_eq!(st.selection_step().as_deref(), Some("[0:3,5,8]"));
+        assert_eq!(st.selection_step().as_deref(), Some("[0..3,5,8]"));
     }
 
     #[test]
@@ -1361,7 +1361,7 @@ mod tests {
         down(&mut st, 2);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.focus, Focus::Columns);
-        assert_eq!(st.active().prefix, "commits [0:3] ");
+        assert_eq!(st.active().prefix, "commits [0..3] ");
         // and the selection does not linger into the new column
         assert!(st.marked.is_empty() && st.visual_from.is_none());
     }
@@ -1382,7 +1382,7 @@ mod tests {
             st.handle(KeyCode::Char('m'), KeyModifiers::NONE);
         }
         let step = st.selection_step().unwrap();
-        assert_eq!(step, "[1:3,6]");
+        assert_eq!(step, "[1..3,6]");
         let p = crate::parse::parse_pipeline(&format!("commits {step}"))
             .expect("the TUI emitted something the parser rejects");
         // and it picks exactly the rows that were marked

@@ -11,7 +11,7 @@
 
 # --- sources -------------------------------------------------------------
 q commits
-q commits [0:3]
+q commits [0..3]
 q commits /count
 q HEAD
 q main
@@ -86,11 +86,11 @@ q commits sort -date
 q commits sort author
 q commits sort -author
 q commits sort sha
-q commits [0:2]
-q commits [2:]
+q commits [0..2]
+q commits [2..]
 q commits [0]
 q commits [-1]
-q commits [1:3]
+q commits [1..3]
 q commits pick sha
 q commits pick sha,author
 q commits pick author,date,message
@@ -118,7 +118,7 @@ q HEAD via parent* in v1..HEAD
 
 # --- terminals (read-only only; effectful ones would mutate the fixture) --
 q commits /show
-q commits [0:2] /show
+q commits [0..2] /show
 q commits /count
 q commits where author alice /count
 q HEAD via diff.hunks /show

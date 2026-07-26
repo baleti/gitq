@@ -991,7 +991,7 @@ covered first or last row is included rather than silently dropped."
     (nreverse rows)))
 
 (defun gitq--selection-step (rows)
-  "ROWS as a gitq positional selection, e.g. \='[0:3,5]\='.
+  "ROWS as a gitq positional selection, e.g. \='[0..3,5]\='.
 Contiguous rows collapse into half-open runs, matching the language and
 the terminal completer's visual mode.  Emitting the query rather than
 carrying hidden selection state is the point: what was selected stays
@@ -1006,7 +1006,7 @@ readable, editable and re-runnable."
               (mapconcat (lambda (run)
                            (if (= (car run) (cdr run))
                                (number-to-string (car run))
-                             (format "%d:%d" (car run) (1+ (cdr run)))))
+                             (format "%d..%d" (car run) (1+ (cdr run)))))
                          (nreverse runs) ",")
               "]"))))
 
@@ -1021,7 +1021,7 @@ query you can refine again.
 
 With an active region, every result the region touches is refined at
 once: the move is applied to a positional selection of this buffer's own
-query (`commits ... [0:3,5]'), which is what makes acting on several
+query (`commits ... [0..3,5]'), which is what makes acting on several
 results expressible for frame shapes that have no single identifying
 field.  A partly covered row counts as covered.
 
