@@ -204,6 +204,11 @@ once, as a positional step on that buffer's own query — the same
 for hunks and diff lines, whose identity is compound and cannot be pinned
 by field equality.
 
+Movement is by *entry*: =n=/=p=, =j=/=k=, =C-n=/=C-p= and the arrow keys
+step between results rather than screen lines, so a hunk is one stop
+however many rows its body takes.  The results buffer is headed by the same
+stats line the terminal preview shows.
+
 =TAB= (or =.=) continues the query *from the object under point*.  The
 minibuffer offers the moves that make sense there — the morphisms whose
 domain that frame's shape satisfies, then the steps and terminals valid
