@@ -269,9 +269,10 @@ the pipeline the highlighted candidate would produce on the right:
   cursor.  =↵= then acts on the whole selection, which becomes a
   positional step on the query you are in (=commits [0..3,5..7]=) rather
   than hidden state.
-- =S-Tab= steps into the preview and back (=^L= is an alias): the result
-  frames become a selectable list,
-  and =↵= (or =^L=) *pivots* onto the highlighted one — a fresh column
+- =^w l= steps into the preview and =^w h= back, as in vim's window
+  commands (=^w w= goes to the other pane): the result frames become a
+  selectable list,
+  and =↵= *pivots* onto the highlighted one — a fresh column
   re-roots on that object (a commit by its SHA, a hunk re-derived through
   =diff.hunks=, …), so you drill from a query's results into a new query
   rooted at one of them.  Same object-graph walk as the Emacs
