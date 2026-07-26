@@ -1238,6 +1238,12 @@ fn event_loop(
 fn draw(f: &mut ratatui::Frame, st: &mut CompleterState) {
     let dim = Style::default().fg(Color::DarkGray);
     let sel = Style::default().add_modifier(Modifier::REVERSED);
+    // The preview's selection covers whole multi-row frames, so reverse video
+    // — a full white block on a dark terminal — is far too loud for the area
+    // it fills.  A muted background instead, which also leaves the diff's own
+    // green and red readable rather than inverting them.  Indexed rather than
+    // Rgb so it renders the same on a 256-colour terminal.
+    let sel_row = Style::default().bg(Color::Indexed(238));
     let sel_dim = Style::default()
         .bg(Color::DarkGray)
         .add_modifier(Modifier::BOLD);
@@ -1405,7 +1411,7 @@ fn draw(f: &mut ratatui::Frame, st: &mut CompleterState) {
                 // the List used to draw the selection; with a Paragraph the
                 // rows carry it themselves
                 if selected {
-                    pad_to(l, pv.width).style(sel)
+                    pad_to(l, pv.width).style(sel_row)
                 } else {
                     l
                 }
