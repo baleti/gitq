@@ -633,8 +633,19 @@ impl CompleterState {
                 .and_then(|f| frame_anchor(f, &base))
         };
         if let Some(n) = next {
-            self.columns
-                .push(Column::new(format!("{n} "), String::new()));
+            if explicit {
+                // A selection only narrows the query it came from: same frame
+                // shape, so the same candidates apply and a new column would
+                // just restate the one behind it.  It is the `[...]` step
+                // typed for you, so it belongs where typing would have put it.
+                self.active_mut().move_to(format!("{n} "));
+            } else {
+                // A single-object drill re-roots on that object, which is a
+                // different query and worth seeing beside the one it came
+                // from.
+                self.columns
+                    .push(Column::new(format!("{n} "), String::new()));
+            }
         }
         self.clear_selection();
         self.focus = Focus::Columns;
@@ -1436,15 +1447,34 @@ mod tests {
     }
 
     #[test]
-    fn pivoting_a_selection_appends_a_positional_step() {
+    fn a_selection_narrows_the_column_it_came_from_without_opening_one() {
         let mut st = previewing(8);
+        let cols = st.columns.len();
         st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
         down(&mut st, 2);
         st.handle(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(st.focus, Focus::Columns);
         assert_eq!(st.active().prefix, "commits [0..3] ");
-        // and the selection does not linger into the new column
+        assert_eq!(
+            st.columns.len(),
+            cols,
+            "a selection opened a column instead of narrowing in place"
+        );
+        // the shape is unchanged, so the same candidates still apply
+        assert!(st.active().all.iter().any(|c| c.kind == "step"));
+        // and the selection does not linger
         assert!(st.marked.is_empty() && st.visual_from.is_none());
+    }
+
+    #[test]
+    fn backspace_undoes_a_selection_that_narrowed_in_place() {
+        let mut st = previewing(8);
+        st.handle(KeyCode::Char('v'), KeyModifiers::NONE);
+        down(&mut st, 2);
+        st.handle(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(st.active().prefix, "commits [0..3] ");
+        st.handle(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(st.active().prefix, "commits ");
     }
 
     #[test]
