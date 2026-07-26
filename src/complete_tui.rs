@@ -139,15 +139,31 @@ fn fuzzy_score(query: &str, cand: &str) -> Option<i32> {
 /// The pattern a pipeline greps for, compiled so the preview can highlight
 /// it.  A plain pattern is escaped so it matches literally, exactly as the
 /// executor's substring test does; a `/slashed/` one is already a regex.
-fn grep_highlight(pipeline: &str) -> Option<regex::Regex> {
-    let parsed = parse_pipeline(pipeline.trim()).ok()?;
-    parsed.steps.iter().find_map(|st| match st {
-        Step::GrepContent(p, is_re) | Step::Grep(p, is_re) => {
-            let src = if *is_re { p.clone() } else { regex::escape(p) };
-            regex::Regex::new(&src).ok()
-        }
-        _ => None,
-    })
+fn grep_highlights(pipeline: &str) -> Vec<regex::Regex> {
+    let Ok(parsed) = parse_pipeline(pipeline.trim()) else {
+        return Vec::new();
+    };
+    // *every* grep, not just the first: successive greps intersect, so a row
+    // on screen matched all of them and showing only one is a half-answer
+    parsed
+        .steps
+        .iter()
+        .filter_map(|st| match st {
+            Step::GrepContent(p, is_re) | Step::Grep(p, is_re) => {
+                let src = if *is_re { p.clone() } else { regex::escape(p) };
+                regex::Regex::new(&src).ok()
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A colour per grep, so intersecting patterns can be told apart at a
+/// glance.  Black on a solid background: the row's own diff colour would
+/// otherwise be doing double duty and neither would read.
+fn highlight_style(n: usize) -> Style {
+    const BG: [Color; 4] = [Color::Yellow, Color::Cyan, Color::Magenta, Color::Green];
+    Style::default().fg(Color::Black).bg(BG[n % BG.len()])
 }
 
 /// A one-line summary of what the preview is showing, by frame shape.
@@ -273,25 +289,37 @@ fn diff_style(row: usize, text: &str) -> Style {
 
 /// Split TEXT into spans, giving matches of HL a reversed run so they stand
 /// out against whatever colour the diff line already carries.
-fn styled_row(text: &str, base: Style, hl: Option<&regex::Regex>) -> Vec<Span<'static>> {
-    let Some(re) = hl else {
+fn styled_row(text: &str, base: Style, hls: &[regex::Regex]) -> Vec<Span<'static>> {
+    if hls.is_empty() {
         return vec![Span::styled(text.to_string(), base)];
-    };
+    }
+    // every pattern's matches, then earliest-first with the longest winning a
+    // tie, so overlapping patterns produce one run rather than nested spans
+    let mut marks: Vec<(usize, usize, usize)> = Vec::new();
+    for (i, re) in hls.iter().enumerate() {
+        for m in re.find_iter(text) {
+            // a zero-width match would produce an empty span forever
+            if m.end() > m.start() {
+                marks.push((m.start(), m.end(), i));
+            }
+        }
+    }
+    marks.sort_by_key(|&(s, e, i)| (s, std::cmp::Reverse(e), i));
+
     let mut out = Vec::new();
     let mut last = 0;
-    for m in re.find_iter(text) {
-        // a zero-width match would loop without advancing
-        if m.end() == m.start() {
-            continue;
+    for (start, end, which) in marks {
+        if start < last {
+            continue; // already covered by an earlier, longer match
         }
-        if m.start() > last {
-            out.push(Span::styled(text[last..m.start()].to_string(), base));
+        if start > last {
+            out.push(Span::styled(text[last..start].to_string(), base));
         }
         out.push(Span::styled(
-            text[m.start()..m.end()].to_string(),
-            base.add_modifier(Modifier::REVERSED),
+            text[start..end].to_string(),
+            highlight_style(which),
         ));
-        last = m.end();
+        last = end;
     }
     if last < text.len() {
         out.push(Span::styled(text[last..].to_string(), base));
@@ -641,7 +669,7 @@ struct CompleterState {
     preview_sel: usize,
     /// Compiled from the pipeline's own `grep`, so the preview highlights
     /// what the query searched for rather than a second, separate search box.
-    highlight: Option<regex::Regex>,
+    highlight: Vec<regex::Regex>,
     /// A `^w` was pressed and the next key is a window command.
     pending_window: bool,
     /// Filter text and selection for the `M-x` palette.
@@ -669,7 +697,7 @@ impl CompleterState {
             frames_key: String::new(),
             frames_from: String::new(),
             preview_sel: 0,
-            highlight: None,
+            highlight: Vec::new(),
             pending_window: false,
             palette_query: String::new(),
             palette_sel: 0,
@@ -733,7 +761,7 @@ impl CompleterState {
                 }
             }
         }
-        self.highlight = grep_highlight(&self.frames_from);
+        self.highlight = grep_highlights(&self.frames_from);
         self.frames_key = key;
         self.preview_sel = 0;
         // row numbers refer to the old result set; keeping them would act on
@@ -1326,7 +1354,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                         // the gutter marks the frame, so only its first row
                         let g = if n == 0 { glyph } else { " " };
                         let mut spans = vec![Span::styled(g, style), Span::raw(" ")];
-                        spans.extend(styled_row(raw, diff_style(n, raw), st.highlight.as_ref()));
+                        spans.extend(styled_row(raw, diff_style(n, raw), &st.highlight));
                         let line = Line::from(spans);
                         if in_visual {
                             line.style(Style::default().bg(Color::Rgb(40, 50, 60)))
@@ -1359,9 +1387,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                 render_frame_line(fr)
                     .lines()
                     .enumerate()
-                    .map(|(n, raw)| {
-                        Line::from(styled_row(raw, diff_style(n, raw), st.highlight.as_ref()))
-                    })
+                    .map(|(n, raw)| Line::from(styled_row(raw, diff_style(n, raw), &st.highlight)))
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -1991,39 +2017,68 @@ mod tests {
     }
 
     #[test]
-    fn the_grep_pattern_is_taken_from_the_pipeline_itself() {
+    fn the_grep_patterns_are_taken_from_the_pipeline_itself() {
         // the preview highlights what the query searched for; there is no
         // second search box to get out of step with it
-        let re = grep_highlight(r#"hunks grep "popup""#).expect("no pattern");
-        assert!(re.is_match("a display-popup here"));
-        assert!(!re.is_match("nothing"));
+        let r = grep_highlights(r#"hunks grep "popup""#);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].is_match("a display-popup here"));
         // a plain pattern is literal, so regex punctuation cannot misfire
-        let re = grep_highlight(r#"hunks grep "a.c""#).expect("no pattern");
-        assert!(re.is_match("a.c"));
-        assert!(!re.is_match("abc"), "plain pattern matched as a regex");
+        let r = grep_highlights(r#"hunks grep "a.c""#);
+        assert!(r[0].is_match("a.c"));
+        assert!(!r[0].is_match("abc"), "plain pattern matched as a regex");
         // a slashed one is a regex
-        let re = grep_highlight("hunks grep /a.c/").expect("no pattern");
-        assert!(re.is_match("abc"));
+        assert!(grep_highlights("hunks grep /a.c/")[0].is_match("abc"));
         // and a pipeline with no grep highlights nothing
-        assert!(grep_highlight("hunks").is_none());
+        assert!(grep_highlights("hunks").is_empty());
+    }
+
+    #[test]
+    fn every_grep_in_the_pipeline_is_highlighted() {
+        // successive greps intersect, so a row on screen matched all of them
+        let r = grep_highlights("hunks grep zle grep widget");
+        assert_eq!(r.len(), 2, "only the first grep was picked up");
+        assert!(r[0].is_match("zle -N"));
+        assert!(r[1].is_match("a widget"));
+    }
+
+    #[test]
+    fn each_pattern_gets_its_own_colour() {
+        let a = grep_highlights("hunks grep zle grep widget");
+        let spans = styled_row("zle and widget", Style::default(), &a);
+        let hl: Vec<&Span> = spans.iter().filter(|s| s.style.bg.is_some()).collect();
+        assert_eq!(hl.len(), 2);
+        assert_ne!(hl[0].style.bg, hl[1].style.bg, "both patterns same colour");
+    }
+
+    #[test]
+    fn overlapping_matches_produce_one_run_not_nested_spans() {
+        let a = vec![
+            regex::Regex::new("abc").unwrap(),
+            regex::Regex::new("bc").unwrap(),
+        ];
+        let spans = styled_row("xabcx", Style::default(), &a);
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "xabcx", "text was duplicated or dropped");
+        assert_eq!(spans.iter().filter(|s| s.style.bg.is_some()).count(), 1);
     }
 
     #[test]
     fn matches_are_split_into_their_own_spans() {
-        let re = regex::Regex::new("pop").unwrap();
-        let spans = styled_row("a pop b pop", Style::default(), Some(&re));
+        let re = vec![regex::Regex::new("pop").unwrap()];
+        let spans = styled_row("a pop b pop", Style::default(), &re);
         let texts: Vec<&str> = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(texts, vec!["a ", "pop", " b ", "pop"]);
         // the whole row survives even with no match
-        let spans = styled_row("nothing", Style::default(), Some(&re));
+        let spans = styled_row("nothing", Style::default(), &re);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].content.as_ref(), "nothing");
     }
 
     #[test]
     fn a_zero_width_match_does_not_hang() {
-        let re = regex::Regex::new("x*").unwrap();
-        let spans = styled_row("abc", Style::default(), Some(&re));
+        let re = vec![regex::Regex::new("x*").unwrap()];
+        let spans = styled_row("abc", Style::default(), &re);
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "abc");
     }
