@@ -846,6 +846,11 @@ impl CompleterState {
             Focus::Columns => match code {
                 // M-x, as in Emacs
                 KeyCode::Char('x') if alt => self.open_palette(),
+                // ^L to the preview, ^H back from it — the vim direction
+                // keys without the ^w prefix, which still works too.  Both
+                // are consumed here, so neither reaches the shell that
+                // spawned the completer.
+                KeyCode::Char('l') if ctrl => self.enter_preview(),
                 KeyCode::Esc => self.quit = true,
                 KeyCode::Char('c' | 'g') if ctrl => self.quit = true,
                 KeyCode::Enter => self.accept(),
@@ -913,6 +918,7 @@ impl CompleterState {
                 _ => {}
             },
             Focus::Preview => match code {
+                KeyCode::Char('h') if ctrl => self.focus = Focus::Columns,
                 KeyCode::Char('v') => self.toggle_visual(),
                 KeyCode::Char('m') => self.mark_selection(),
                 // Esc peels one layer at a time: the range, then the marks,
@@ -1185,7 +1191,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                     n,
                     desc
                 ),
-                "Tab next  ^j/^k move  ^w l preview  M-x cmds  ↵ accept",
+                "Tab next  ^j/^k move  ^L preview  M-x cmds  ↵ accept",
             )
         }
         Focus::Preview => {
@@ -1203,7 +1209,7 @@ fn draw(f: &mut ratatui::Frame, st: &CompleterState) {
                 if st.visual_from.is_some() {
                     "^j/^k extend  m mark range  v cancel  ↵ act on selection"
                 } else {
-                    "^j/^k move  v visual  m mark  ↵ pivot  ^w h back"
+                    "^j/^k move  v visual  m mark  ↵ pivot  ^H back"
                 },
             )
         }
@@ -1518,11 +1524,27 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_l_no_longer_switches_focus() {
+    fn ctrl_l_and_ctrl_h_switch_focus_without_the_prefix() {
+        // measured: ^H arrives as Char('h')+CONTROL, distinct from Backspace,
+        // so it is safe to bind in a pane that also edits text
         let mut st = CompleterState::new("commits ");
         st.frames = vec![commit_frame("aaaa")];
         st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(st.focus, Focus::Preview);
+        st.handle(KeyCode::Char('h'), KeyModifiers::CONTROL);
         assert_eq!(st.focus, Focus::Columns);
+    }
+
+    #[test]
+    fn ctrl_l_is_swallowed_rather_than_reaching_the_shell() {
+        // the completer owns the terminal in raw mode, so a ^L bound to
+        // clear-history in the spawning shell must never see it
+        let mut st = CompleterState::new("commits ");
+        st.frames.clear(); // nothing to preview: ^L still must not fall through
+        st.handle(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(st.focus, Focus::Columns);
+        assert_eq!(st.active().line, "commits ", "^L was typed into the line");
+        assert!(!st.quit);
     }
 
     #[test]
