@@ -452,6 +452,7 @@ pub fn describe_token(tok: &str) -> Option<&'static str> {
         "blobs" => "blob/tree entries under HEAD's tree",
         "HEAD" => "the current commit",
         "in" => "restrict to a revision range (source modifier or step)",
+        "refspec" => "keep only commits in a git range, e.g. main..HEAD",
         // steps
         "via" => "traverse a morphism (parent, tree, diff, ...)",
         "where" => "filter by field conditions",

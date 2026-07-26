@@ -75,7 +75,21 @@ pub fn complete_candidates(input: &str) -> Vec<String> {
     // after "where" or "," → fields of the current frame type (a comma
     // inside pick lands here too, with the same answer)
     if last_text == Some("where") || matches!(last, Some(Token::Comma)) {
-        return current_type_fields(ctx);
+        let mut out = current_type_fields(ctx);
+        // `refspec` is offered by `where` only.  It is not a field of the
+        // frame, so `sort`/`pick` must not suggest it — and a comma inside
+        // `pick` lands here too, hence the check on the enclosing step.
+        if enclosing_step(ctx).as_deref() == Some("where")
+            && out.iter().any(|f| f == "sha" || f == "commit-sha")
+        {
+            out.push("refspec".to_string());
+        }
+        return out;
+    }
+
+    // after `where refspec` → revision ranges
+    if last_text == Some("refspec") && enclosing_step(ctx).as_deref() == Some("where") {
+        return complete_ranges();
     }
 
     // after a field inside a where clause → operators and (for
@@ -261,6 +275,23 @@ mod tests {
     #[test]
     fn empty_input_offers_sources() {
         assert_eq!(c(""), strs(COMPLETE_SOURCE_KEYWORDS));
+    }
+
+    #[test]
+    fn refspec_is_offered_by_where_but_not_by_sort_or_pick() {
+        assert!(c("commits where ").contains(&"refspec".to_string()));
+        assert!(!c("commits sort ").contains(&"refspec".to_string()));
+        assert!(!c("commits pick ").contains(&"refspec".to_string()));
+        // nor on a frame with nothing to intersect on
+        assert!(!c("commits via diff.hunks pick path where ").contains(&"refspec".to_string()));
+    }
+
+    #[test]
+    fn where_refspec_completes_to_ranges() {
+        let out = c("commits where refspec ");
+        if !out.is_empty() {
+            assert!(out[0].contains(".."), "{:?}", &out[..out.len().min(3)]);
+        }
     }
 
     #[test]
